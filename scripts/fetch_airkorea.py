@@ -34,13 +34,13 @@ class ApiError(Exception):
     pass
 
 
-def call(path, params, tries=3):
+def call(path, params, tries=4):
     q = urllib.parse.urlencode({"serviceKey": KEY, "returnType": "json", **params})
     url = BASE + path + "?" + q
     last = None
     for i in range(tries):
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "rhffkwl-weather/1.0"}), timeout=60) as r:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "rhffkwl-weather/1.0"}), timeout=75) as r:
                 body = r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")
@@ -50,7 +50,7 @@ def call(path, params, tries=3):
             time.sleep(3 * (i + 1)); continue
         except Exception as e:  # network
             last = ApiError(f"network: {e}")
-            time.sleep(3 * (i + 1)); continue
+            time.sleep(10 * (i + 1)); continue
         try:
             j = json.loads(body)
         except ValueError:
@@ -179,7 +179,10 @@ def main():
         log("measurement fetch FAILED:", msg)
         if any(t in msg for t in ("NOT_REGISTERED", "NOT REGISTERED", "HTTP 401", "HTTP 403", "error 30", "UNAUTHORIZED", "Unauthorized")):
             log("::warning::AirKorea service key not (yet) registered/approved for ArpltnInforInqireSvc. Activation can take 1-2 hours.")
-        return 1
+            return 1
+        # transient (apis.data.go.kr timeouts happen from overseas runners): keep last data, the apps fall back after 3h
+        log("::warning::AirKorea temporarily unreachable; keeping previous data/airkorea.json")
+        return 0
     log("measurements:", len(rows), "rows")
     stations = load_json(STN, {})
     stations, changed = refresh_stations(stations, force_stn)
