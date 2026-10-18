@@ -1,0 +1,46 @@
+name: AirKorea 미세먼지 갱신
+
+on:
+  schedule:
+    - cron: "20 * * * *"   # hourly at :20 (AirKorea publishes hourly)
+  workflow_dispatch:
+    inputs:
+      refresh_stations:
+        description: "측정소 좌표표 강제 갱신 (1=yes)"
+        required: false
+        default: "0"
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: airkorea
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch AirKorea real-time measurements
+        env:
+          AIRKOREA_SERVICE_KEY: ${{ secrets.AIRKOREA_SERVICE_KEY }}
+          REFRESH_STATIONS: ${{ github.event.inputs.refresh_stations }}
+        run: python3 scripts/fetch_airkorea.py
+      - name: Commit if changed
+        id: commit
+        run: |
+          git add data/airkorea.json data/stations.json 2>/dev/null || true
+          if git diff --cached --quiet; then echo "No change in data"; echo "pushed=0" >> "$GITHUB_OUTPUT"; exit 0; fi
+          git config user.name "rhffkwl"
+          git config user.email "rhffkwl@users.noreply.github.com"
+          git commit -q -m "data: AirKorea $(python3 -c 'import json;print(json.load(open("data/airkorea.json"))["dataTime"])')"
+          for i in 1 2 3; do git pull -q --rebase origin main && git push -q origin HEAD:main && break; sleep 5; done
+          echo "pushed=1" >> "$GITHUB_OUTPUT"
+      - name: Request Pages build
+        if: steps.commit.outputs.pushed == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X POST "repos/${{ github.repository }}/pages/builds" --silent || echo "pages build request skipped"
