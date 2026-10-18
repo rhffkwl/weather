@@ -1,0 +1,537 @@
+// Variables used by Scriptable.
+// These must be at the very top of the file. Do not edit.
+// icon-color: deep-blue; icon-glyph: cloud-sun;
+
+/*
+ * 하늘 날씨 위젯 (Scriptable)
+ * - 데이터: Open-Meteo 예보 / 대기질 / 지오코딩 (API 키 불필요)
+ * - 크기: 소형 · 중형 · 대형 (잠금화면 위젯도 간단히 지원)
+ * - 위치: 현재 위치(실패 시 마지막 위치 → 서울).
+ *   위젯 길게 누르기 > 위젯 편집 > Parameter 에 도시 이름(예: 부산, 제주, 강릉)을 넣으면 그 도시를 표시합니다.
+ *   "37.57,126.98" 처럼 위도,경도를 직접 넣어도 됩니다.
+ * - 웹앱: https://rhffkwl.github.io/weather/
+ */
+
+const CONFIG = {
+  appURL: "https://rhffkwl.github.io/weather/",
+  fallback: { name: "서울", lat: 37.5665, lon: 126.978 },
+  refreshMinutes: 30,
+  locationTimeout: 8,   // 초
+  requestTimeout: 12,   // 초
+  previewSize: "medium", // 앱에서 실행할 때 미리보기 크기: small | medium | large
+  debugParameter: "",    // 앱에서 테스트할 도시 (예: "부산")
+};
+const TZ = "Asia/Seoul";
+
+/* ---------------- 공통 유틸 ---------------- */
+const fm = FileManager.local();
+const DIR = fm.joinPath(fm.documentsDirectory(), "weather-widget");
+if (!fm.fileExists(DIR)) fm.createDirectory(DIR, true);
+
+const PARAM = String((config.runsInWidget ? args.widgetParameter : (args.widgetParameter || CONFIG.debugParameter)) || "").trim();
+const FAMILY = config.runsInWidget ? (config.widgetFamily || "medium") : CONFIG.previewSize;
+
+class NotFoundError extends Error {}
+
+function pad(n) { return (n < 10 ? "0" : "") + n; }
+function seoulParts(ms) {
+  const d = new Date(ms + 9 * 3600 * 1000); // 한국은 서머타임 없음
+  return { y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, d: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes() };
+}
+function seoulISO(ms) { const p = seoulParts(ms); return `${p.y}-${pad(p.mo)}-${pad(p.d)}T${pad(p.h)}:${pad(p.mi)}`; }
+function hashStr(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; return h.toString(16); }
+function qs(o) { return Object.keys(o).map(k => encodeURIComponent(k) + "=" + encodeURIComponent(o[k])).join("&"); }
+function readJSON(path) { try { if (fm.fileExists(path)) return JSON.parse(fm.readString(path)); } catch (e) {} return null; }
+function writeJSON(path, obj) { try { fm.writeString(path, JSON.stringify(obj)); } catch (e) {} }
+function isNum(v) { return typeof v === "number" && isFinite(v); }
+function tempStr(v) { return isNum(v) ? Math.round(v) + "°" : "--°"; }
+function pctStr(v) { return isNum(v) ? Math.round(v) + "%" : "-"; }
+
+function sleep(sec) { return new Promise(r => Timer.schedule(sec * 1000, false, r)); }
+function withTimeout(p, sec, label) {
+  return Promise.race([p, sleep(sec).then(() => { throw new Error(label + " 시간 초과"); })]);
+}
+
+async function getJSON(url) {
+  const req = new Request(url);
+  req.timeoutInterval = CONFIG.requestTimeout;
+  const j = await req.loadJSON();
+  const sc = req.response && req.response.statusCode;
+  if (sc && sc >= 400) throw new Error("HTTP " + sc + (j && j.reason ? ": " + j.reason : ""));
+  if (j && j.error) throw new Error(j.reason || "API 오류");
+  return j;
+}
+
+/* ---------------- 날씨 코드 ---------------- */
+function weatherInfo(code, isDay) {
+  const c = Number(code);
+  const T = (text, day, night, kind) => ({ text, symbol: isDay ? day : (night || day), kind });
+  if (c === 0) return T("맑음", "sun.max.fill", "moon.stars.fill", isDay ? "sun" : "moon");
+  if (c === 1) return T("대체로 맑음", "sun.max.fill", "moon.fill", isDay ? "sun" : "moon");
+  if (c === 2) return T("구름 조금", "cloud.sun.fill", "cloud.moon.fill", "cloud");
+  if (c === 3) return T("흐림", "cloud.fill", "cloud.fill", "cloud");
+  if (c === 45 || c === 48) return T("안개", "cloud.fog.fill", "cloud.fog.fill", "cloud");
+  if (c >= 51 && c <= 55) return T("이슬비", "cloud.drizzle.fill", null, "rain");
+  if (c === 56 || c === 57) return T("어는 이슬비", "cloud.sleet.fill", null, "rain");
+  if (c === 61) return T("약한 비", "cloud.rain.fill", null, "rain");
+  if (c === 63) return T("비", "cloud.rain.fill", null, "rain");
+  if (c === 65) return T("강한 비", "cloud.heavyrain.fill", null, "rain");
+  if (c === 66 || c === 67) return T("어는 비", "cloud.sleet.fill", null, "rain");
+  if (c === 71) return T("약한 눈", "cloud.snow.fill", null, "snow");
+  if (c === 73) return T("눈", "cloud.snow.fill", null, "snow");
+  if (c === 75) return T("강한 눈", "snowflake", null, "snow");
+  if (c === 77) return T("싸락눈", "cloud.snow.fill", null, "snow");
+  if (c === 80) return T("약한 소나기", "cloud.sun.rain.fill", "cloud.moon.rain.fill", "rain");
+  if (c === 81) return T("소나기", "cloud.rain.fill", null, "rain");
+  if (c === 82) return T("강한 소나기", "cloud.heavyrain.fill", null, "rain");
+  if (c === 85 || c === 86) return T("눈 소나기", "cloud.snow.fill", null, "snow");
+  if (c === 95) return T("뇌우", "cloud.bolt.rain.fill", null, "storm");
+  if (c === 96 || c === 99) return T("우박 동반 뇌우", "cloud.hail.fill", null, "storm");
+  return T("알 수 없음", "cloud.fill", null, "cloud");
+}
+const ICON_TINT = { sun: "#FFD60A", moon: "#F2F2F7", cloud: "#FFFFFF", rain: "#9AD8FF", snow: "#FFFFFF", storm: "#FFD60A" };
+
+/* ---------------- 미세먼지 ---------------- */
+const PM_LABELS = ["좋음", "보통", "나쁨", "매우나쁨"];
+const PM_COLORS = ["#2F80ED", "#27AE60", "#F2994A", "#EB5757"];
+function pmLevel(v, kind) {
+  if (!isNum(v)) return null;
+  const t = kind === "pm10" ? [30, 80, 150] : [15, 35, 75];
+  const i = v <= t[0] ? 0 : v <= t[1] ? 1 : v <= t[2] ? 2 : 3;
+  return { label: PM_LABELS[i], color: PM_COLORS[i], value: Math.round(v), index: i };
+}
+
+/* ---------------- 위치 ---------------- */
+const FC_RANK = { PPLC: 6, PPLA: 5, PPLA2: 4, PPLA3: 3, PPLA4: 2, PPL: 1, ADM1: 1, ADM2: 1 };
+async function geocode(q) {
+  const variants = [q];
+  if (/[가-힣]$/.test(q) && !/(시|군|구|도|읍|면|동|리)$/.test(q)) {
+    ["시", "특별시", "광역시", "특별자치시", "특별자치도", "군"].forEach(s => variants.push(q + s));
+  }
+  let failures = 0;
+  const lists = await Promise.all(variants.map(v =>
+    getJSON("https://geocoding-api.open-meteo.com/v1/search?" + qs({ name: v, count: 10, language: "ko", format: "json" }))
+      .then(j => (j && j.results) || [])
+      .catch(() => { failures++; return []; })));
+  if (failures === variants.length) throw new Error("인터넷 연결을 확인해 주세요 (지역 검색 실패)");
+  const seen = {};
+  let all = [];
+  lists.forEach(l => l.forEach(r => { if (!seen[r.id]) { seen[r.id] = 1; all.push(r); } }));
+  const kr = all.filter(r => r.country_code === "KR");
+  if (kr.length) all = kr;
+  const places = all.filter(r => /^(PPL|ADM)/.test(r.feature_code || ""));
+  if (places.length) all = places;
+  const isPPL = r => /^PPL/.test(r.feature_code || "") ? 1 : 0;
+  all.sort((a, b) => (isPPL(b) - isPPL(a)) || ((b.population || 0) - (a.population || 0)) ||
+    ((FC_RANK[b.feature_code] || 0) - (FC_RANK[a.feature_code] || 0)));
+  const r = all[0];
+  if (!r) return null;
+  return { name: q, fullName: r.name, admin1: r.admin1 || "", lat: r.latitude, lon: r.longitude };
+}
+
+async function resolveLocation(cache) {
+  if (PARAM) {
+    const m = PARAM.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
+    if (m) return { name: "지정 위치", lat: +m[1], lon: +m[2], source: "param" };
+    const geoPath = fm.joinPath(DIR, "geo-" + hashStr(PARAM) + ".json");
+    const saved = readJSON(geoPath);
+    if (saved && saved.q === PARAM && saved.loc) return Object.assign({}, saved.loc, { source: "param" });
+    const r = await geocode(PARAM);
+    if (!r) throw new NotFoundError(`'${PARAM}' 위치를 찾을 수 없어요`);
+    writeJSON(geoPath, { q: PARAM, loc: r });
+    return Object.assign({}, r, { source: "param" });
+  }
+  try {
+    Location.setAccuracyToThreeKilometers();
+    const l = await withTimeout(Location.current(), CONFIG.locationTimeout, "위치");
+    if (!l || !isNum(l.latitude)) throw new Error("위치 없음");
+    let name = "현재 위치";
+    try {
+      const rg = await withTimeout(Location.reverseGeocode(l.latitude, l.longitude, "ko_KR"), 5, "주소");
+      const a = rg && rg[0];
+      if (a) name = a.subLocality || a.locality || a.administrativeArea || name;
+    } catch (e) {}
+    return { name, lat: l.latitude, lon: l.longitude, source: "gps" };
+  } catch (e) {
+    if (cache && cache.loc && /^gps/.test(cache.loc.source)) return Object.assign({}, cache.loc, { source: "gps-cached" });
+    return Object.assign({}, CONFIG.fallback, { source: "fallback" });
+  }
+}
+
+/* ---------------- 데이터 ---------------- */
+async function fetchWeather(loc) {
+  const base = { latitude: loc.lat.toFixed(4), longitude: loc.lon.toFixed(4), timezone: TZ };
+  const fcURL = "https://api.open-meteo.com/v1/forecast?" + qs(Object.assign({}, base, {
+    current: "temperature_2m,apparent_temperature,relative_humidity_2m,is_day,weather_code,precipitation,wind_speed_10m",
+    hourly: "temperature_2m,weather_code,precipitation_probability,is_day",
+    daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+    forecast_days: 6,
+    wind_speed_unit: "ms",
+  }));
+  const aqURL = "https://air-quality-api.open-meteo.com/v1/air-quality?" + qs(Object.assign({}, base, { current: "pm10,pm2_5" }));
+  const [fc, aq] = await Promise.all([getJSON(fcURL), getJSON(aqURL).catch(() => null)]);
+  if (!fc || !fc.current || !fc.hourly || !fc.daily) throw new Error("예보 데이터가 비어 있어요");
+  return { fc, aq };
+}
+
+const DOW = ["일", "월", "화", "수", "목", "금", "토"];
+function dowLabel(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return DOW[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+}
+
+function buildModel(raw, offline) {
+  const { loc, fc, aq, fetchedAt } = raw;
+  const c = fc.current, h = fc.hourly, d = fc.daily;
+  const nowISO = seoulISO(Date.now());
+  const nowHour = nowISO.slice(0, 13);
+  let idx = h.time.findIndex(t => t.slice(0, 13) >= nowHour);
+  if (idx < 0) idx = h.time.length - 1;
+  const hours = [];
+  for (let i = idx + 1; i < h.time.length && hours.length < 6; i++) {
+    hours.push({
+      label: Number(h.time[i].slice(11, 13)) + "시",
+      temp: h.temperature_2m[i], code: h.weather_code[i],
+      isDay: h.is_day ? h.is_day[i] === 1 : true,
+      pop: h.precipitation_probability ? h.precipitation_probability[i] : null,
+    });
+  }
+  let di = d.time.indexOf(nowISO.slice(0, 10));
+  if (di < 0) di = 0;
+  const days = [];
+  for (let i = di; i < d.time.length && days.length < 5; i++) {
+    days.push({
+      label: i === di ? "오늘" : dowLabel(d.time[i]),
+      code: d.weather_code[i], max: d.temperature_2m_max[i], min: d.temperature_2m_min[i],
+      pop: d.precipitation_probability_max ? d.precipitation_probability_max[i] : null,
+    });
+  }
+  const aqc = aq && aq.current ? aq.current : {};
+  const isDay = c.is_day === 1;
+  return {
+    place: loc.name, source: loc.source,
+    temp: c.temperature_2m, feels: c.apparent_temperature, humidity: c.relative_humidity_2m, wind: c.wind_speed_10m,
+    code: c.weather_code, isDay, info: weatherInfo(c.weather_code, isDay),
+    max: days[0] ? days[0].max : null, min: days[0] ? days[0].min : null,
+    popNow: h.precipitation_probability ? h.precipitation_probability[Math.max(idx, 0)] : null,
+    popDay: days[0] ? days[0].pop : null,
+    hours, days,
+    pm10: pmLevel(aqc.pm10, "pm10"), pm25: pmLevel(aqc.pm2_5, "pm25"),
+    fetchedAt, offline,
+  };
+}
+
+function updatedLabel(m) {
+  const p = seoulParts(m.fetchedAt), n = seoulParts(Date.now());
+  const same = p.y === n.y && p.mo === n.mo && p.d === n.d;
+  const t = (same ? "" : `${p.mo}/${p.d} `) + `${pad(p.h)}:${pad(p.mi)}`;
+  return m.offline ? `오프라인 · ${t}` : `${t} 업데이트`;
+}
+
+/* ---------------- 스타일 ---------------- */
+const WHITE = Color.white();
+const SUB = new Color("#FFFFFF", 0.78);
+const FAINT = new Color("#FFFFFF", 0.55);
+const RAIN = new Color("#9AD8FF");
+
+function dyn(light, dark) { return Color.dynamic(new Color(light), new Color(dark)); }
+function background(m) {
+  const k = m.info.kind;
+  let p;
+  if (k === "storm") p = ["#4A4E69", "#22223B", "#2B2D42", "#121220"];
+  else if (k === "rain") p = m.isDay ? ["#5B7493", "#2E4561", "#2A3646", "#121A25"] : ["#2B3647", "#121A26", "#1B2330", "#0A0F17"];
+  else if (k === "snow") p = m.isDay ? ["#9DB2CB", "#62799A", "#3E4A5A", "#1F2732"] : ["#3A4659", "#1A2231", "#262E3B", "#0E131C"];
+  else if (!m.isDay) p = k === "cloud" ? ["#2E3748", "#141A26", "#1C2230", "#090D15"] : ["#1B2A4E", "#0A1128", "#111A33", "#04070F"];
+  else if (k === "cloud") p = ["#7E95B0", "#4E6685", "#384556", "#1D2633"];
+  else p = ["#4BA3F2", "#1B6CD1", "#1D3E6E", "#0D213F"];
+  const g = new LinearGradient();
+  g.colors = [dyn(p[0], p[2]), dyn(p[1], p[3])];
+  g.locations = [0, 1];
+  return g;
+}
+
+function addText(stack, str, font, color, align) {
+  const t = stack.addText(String(str));
+  t.font = font;
+  t.textColor = color || WHITE;
+  t.lineLimit = 1;
+  t.minimumScaleFactor = 0.6;
+  if (align === "right") t.rightAlignText();
+  else if (align === "center") t.centerAlignText();
+  return t;
+}
+function addSymbol(stack, name, size, color) {
+  const s = SFSymbol.named(name) || SFSymbol.named("cloud.fill");
+  s.applyFont(Font.systemFont(size));
+  const img = stack.addImage(s.image);
+  img.imageSize = new Size(size, size);
+  img.tintColor = color || WHITE;
+  return img;
+}
+function weatherIcon(stack, code, isDay, size) {
+  const info = weatherInfo(code, isDay);
+  return addSymbol(stack, info.symbol, size, new Color(ICON_TINT[info.kind] || "#FFFFFF"));
+}
+function pill(stack, text, hex, size) {
+  const p = stack.addStack();
+  p.backgroundColor = new Color(hex, 0.92);
+  p.cornerRadius = size;
+  p.setPadding(2, 6, 2, 6);
+  p.centerAlignContent();
+  addText(p, text, Font.semiboldSystemFont(size), WHITE);
+  return p;
+}
+function pm25Pill(stack, m, size) {
+  if (m.pm25) return pill(stack, `초미세 ${m.pm25.label}`, m.pm25.color, size);
+  return pill(stack, "초미세 -", "#8E8E93", size);
+}
+function placeRow(stack, m, size) {
+  const r = stack.addStack();
+  r.centerAlignContent();
+  if (/^gps/.test(m.source)) { addSymbol(r, "location.fill", size - 3, WHITE); r.addSpacer(3); }
+  addText(r, m.place, Font.semiboldSystemFont(size), WHITE);
+  return r;
+}
+function hourlyRow(stack, m, opts) {
+  const row = stack.addStack();
+  row.layoutHorizontally();
+  const list = m.hours.length ? m.hours : [];
+  list.forEach((h, i) => {
+    if (i > 0) row.addSpacer();
+    const col = row.addStack();
+    col.layoutVertically();
+    col.centerAlignContent();
+    const c1 = col.addStack(); c1.addSpacer(); addText(c1, h.label, Font.mediumSystemFont(opts.font - 1), SUB); c1.addSpacer();
+    col.addSpacer(3);
+    const c2 = col.addStack(); c2.addSpacer(); weatherIcon(c2, h.code, h.isDay, opts.icon); c2.addSpacer();
+    col.addSpacer(3);
+    const c3 = col.addStack(); c3.addSpacer(); addText(c3, tempStr(h.temp), Font.semiboldSystemFont(opts.font + 1), WHITE); c3.addSpacer();
+    const c4 = col.addStack(); c4.addSpacer();
+    addText(c4, isNum(h.pop) && h.pop > 0 ? pctStr(h.pop) : " ", Font.mediumSystemFont(opts.font - 2), RAIN); c4.addSpacer();
+  });
+  if (!list.length) addText(row, "시간별 예보 없음", Font.systemFont(opts.font), SUB);
+  return row;
+}
+
+/* ---------------- 레이아웃 ---------------- */
+function smallWidget(w, m) {
+  w.setPadding(14, 14, 12, 14);
+  const top = w.addStack(); top.centerAlignContent();
+  placeRow(top, m, 13);
+  top.addSpacer();
+  w.addSpacer(2);
+  const row = w.addStack(); row.centerAlignContent();
+  addText(row, tempStr(m.temp), Font.boldSystemFont(38), WHITE);
+  row.addSpacer();
+  weatherIcon(row, m.code, m.isDay, 30);
+  addText(w, m.info.text, Font.mediumSystemFont(12), WHITE);
+  addText(w, `최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(11), SUB);
+  w.addSpacer();
+  const bot = w.addStack(); bot.centerAlignContent();
+  pm25Pill(bot, m, 10);
+  bot.addSpacer();
+  addText(bot, updatedLabel(m).replace(" 업데이트", ""), Font.systemFont(9), FAINT);
+}
+
+function mediumWidget(w, m) {
+  w.setPadding(14, 16, 12, 14);
+  const main = w.addStack(); main.layoutHorizontally();
+  const left = main.addStack(); left.layoutVertically(); left.size = new Size(118, 0);
+  placeRow(left, m, 13);
+  const tr = left.addStack(); tr.centerAlignContent();
+  addText(tr, tempStr(m.temp), Font.boldSystemFont(34), WHITE);
+  tr.addSpacer(6);
+  weatherIcon(tr, m.code, m.isDay, 24);
+  tr.addSpacer();
+  addText(left, m.info.text, Font.mediumSystemFont(12), WHITE);
+  addText(left, `최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(10), SUB);
+  addText(left, `체감 ${tempStr(m.feels)} · 강수 ${pctStr(isNum(m.popNow) ? m.popNow : m.popDay)}`, Font.systemFont(10), SUB);
+  left.addSpacer();
+  pm25Pill(left, m, 10);
+
+  main.addSpacer(10);
+  const right = main.addStack(); right.layoutVertically();
+  const hdr = right.addStack(); hdr.centerAlignContent();
+  addText(hdr, "시간별", Font.semiboldSystemFont(10), SUB);
+  hdr.addSpacer();
+  addText(hdr, updatedLabel(m), Font.systemFont(9), FAINT);
+  right.addSpacer();
+  hourlyRow(right, m, { font: 11, icon: 18 });
+  right.addSpacer();
+}
+
+function tempBar(stack, d, lo, hi, width) {
+  const bar = stack.addStack();
+  bar.size = new Size(width, 5);
+  bar.cornerRadius = 2.5;
+  bar.backgroundColor = new Color("#FFFFFF", 0.22);
+  bar.layoutHorizontally();
+  if (!isNum(d.min) || !isNum(d.max) || !(hi > lo)) return;
+  const x = Math.max(0, Math.round((d.min - lo) / (hi - lo) * width));
+  const bw = Math.max(6, Math.round((d.max - d.min) / (hi - lo) * width));
+  if (x > 0) bar.addSpacer(Math.min(x, width - bw));
+  const fill = bar.addStack();
+  fill.size = new Size(bw, 5);
+  fill.cornerRadius = 2.5;
+  fill.backgroundColor = new Color("#FFD60A", 0.95);
+  bar.addSpacer();
+}
+
+function airBlock(stack, title, sub, lvl) {
+  const s = stack.addStack(); s.layoutVertically();
+  const t = s.addStack(); t.centerAlignContent();
+  addText(t, title, Font.semiboldSystemFont(11), WHITE);
+  t.addSpacer(3);
+  addText(t, sub, Font.systemFont(9), FAINT);
+  s.addSpacer(3);
+  const v = s.addStack(); v.centerAlignContent();
+  if (lvl) {
+    pill(v, lvl.label, lvl.color, 10);
+    v.addSpacer(5);
+    addText(v, `${lvl.value}㎍/㎥`, Font.mediumSystemFont(11), SUB);
+  } else {
+    addText(v, "정보 없음", Font.systemFont(11), SUB);
+  }
+  return s;
+}
+
+function largeWidget(w, m) {
+  w.setPadding(16, 16, 14, 16);
+  const hdr = w.addStack(); hdr.centerAlignContent();
+  placeRow(hdr, m, 15);
+  hdr.addSpacer();
+  addText(hdr, updatedLabel(m), Font.systemFont(10), FAINT);
+  w.addSpacer(6);
+
+  const cur = w.addStack(); cur.centerAlignContent();
+  weatherIcon(cur, m.code, m.isDay, 42);
+  cur.addSpacer(10);
+  addText(cur, tempStr(m.temp), Font.boldSystemFont(46), WHITE);
+  cur.addSpacer();
+  const info = cur.addStack(); info.layoutVertically();
+  const lines = [
+    [m.info.text, Font.semiboldSystemFont(14), WHITE],
+    [`최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(11), SUB],
+    [`체감 ${tempStr(m.feels)} · 강수 ${pctStr(isNum(m.popNow) ? m.popNow : m.popDay)}`, Font.systemFont(11), SUB],
+    [`습도 ${pctStr(m.humidity)} · 바람 ${isNum(m.wind) ? m.wind.toFixed(1) : "-"}m/s`, Font.systemFont(11), SUB],
+  ];
+  lines.forEach(([s, f, c]) => { const r = info.addStack(); r.addSpacer(); addText(r, s, f, c, "right"); });
+
+  w.addSpacer();
+  hourlyRow(w, m, { font: 11, icon: 18 });
+  w.addSpacer();
+
+  const air = w.addStack(); air.layoutHorizontally();
+  airBlock(air, "미세먼지", "PM10", m.pm10);
+  air.addSpacer();
+  airBlock(air, "초미세먼지", "PM2.5", m.pm25);
+  air.addSpacer();
+  w.addSpacer();
+
+  const valid = m.days.filter(d => isNum(d.min) && isNum(d.max));
+  const lo = valid.length ? Math.min(...valid.map(d => d.min)) : 0;
+  const hi = valid.length ? Math.max(...valid.map(d => d.max)) : 1;
+  m.days.forEach((d, i) => {
+    if (i > 0) w.addSpacer(4);
+    const r = w.addStack(); r.centerAlignContent();
+    const l = r.addStack(); l.size = new Size(34, 18); l.centerAlignContent();
+    addText(l, d.label, Font.semiboldSystemFont(12), WHITE); l.addSpacer();
+    const ic = r.addStack(); ic.size = new Size(24, 18); ic.centerAlignContent();
+    weatherIcon(ic, d.code, true, 16);
+    const pp = r.addStack(); pp.size = new Size(38, 18); pp.centerAlignContent();
+    addText(pp, isNum(d.pop) && d.pop > 0 ? pctStr(d.pop) : "", Font.mediumSystemFont(10), RAIN); pp.addSpacer();
+    r.addSpacer();
+    const mn = r.addStack(); mn.size = new Size(32, 18); mn.centerAlignContent(); mn.addSpacer();
+    addText(mn, tempStr(d.min), Font.mediumSystemFont(12), SUB);
+    r.addSpacer(8);
+    tempBar(r, d, lo, hi, 90);
+    r.addSpacer(8);
+    const mx = r.addStack(); mx.size = new Size(32, 18); mx.centerAlignContent();
+    addText(mx, tempStr(d.max), Font.semiboldSystemFont(12), WHITE); mx.addSpacer();
+  });
+}
+
+function accessoryWidget(w, m, family) {
+  if (family === "accessoryInline") {
+    addText(w, `${m.place} ${tempStr(m.temp)} ${m.info.text}`, Font.systemFont(12), WHITE);
+    return;
+  }
+  if (family === "accessoryCircular") {
+    w.addAccessoryWidgetBackground = true;
+    const c = w.addStack(); c.layoutVertically(); c.centerAlignContent();
+    const a = c.addStack(); a.addSpacer(); weatherIcon(a, m.code, m.isDay, 16); a.addSpacer();
+    const b = c.addStack(); b.addSpacer(); addText(b, tempStr(m.temp), Font.semiboldSystemFont(14), WHITE); b.addSpacer();
+    return;
+  }
+  const r = w.addStack(); r.centerAlignContent();
+  weatherIcon(r, m.code, m.isDay, 14); r.addSpacer(4);
+  addText(r, `${m.place} ${tempStr(m.temp)}`, Font.semiboldSystemFont(13), WHITE);
+  addText(w, `${m.info.text} · ${tempStr(m.max)}/${tempStr(m.min)}`, Font.systemFont(11), WHITE);
+  addText(w, `초미세 ${m.pm25 ? m.pm25.label : "-"} · 강수 ${pctStr(m.popDay)}`, Font.systemFont(11), WHITE);
+}
+
+function buildWidget(m, family) {
+  const w = new ListWidget();
+  if (/^accessory/.test(family)) { accessoryWidget(w, m, family); return w; }
+  w.backgroundGradient = background(m);
+  if (family === "small") smallWidget(w, m);
+  else if (family === "large" || family === "extraLarge") largeWidget(w, m);
+  else mediumWidget(w, m);
+  return w;
+}
+
+function errorWidget(err, family) {
+  const w = new ListWidget();
+  if (!/^accessory/.test(family)) {
+    const g = new LinearGradient();
+    g.colors = [dyn("#6B7A8F", "#2C333D"), dyn("#3E4A5C", "#14181E")];
+    g.locations = [0, 1];
+    w.backgroundGradient = g;
+    w.setPadding(14, 14, 14, 14);
+  }
+  addSymbol(w, "exclamationmark.icloud.fill", 22, WHITE);
+  w.addSpacer(6);
+  const t = addText(w, "날씨를 불러올 수 없어요", Font.semiboldSystemFont(13), WHITE); t.lineLimit = 2;
+  w.addSpacer(2);
+  let msg = (err && err.message) || "알 수 없는 오류";
+  if (!(err instanceof NotFoundError) && !/[가-힣]/.test(msg)) msg = "인터넷 연결을 확인해 주세요 (" + msg + ")";
+  const d = addText(w, msg, Font.systemFont(10), SUB); d.lineLimit = 3;
+  w.addSpacer();
+  addText(w, "잠시 후 자동으로 다시 시도해요", Font.systemFont(9), FAINT);
+  return w;
+}
+
+/* ---------------- 실행 ---------------- */
+async function main() {
+  const cacheFile = fm.joinPath(DIR, "cache-" + (PARAM ? "p" + hashStr(PARAM) : "here") + ".json");
+  const cache = readJSON(cacheFile);
+  let model = null, err = null;
+  try {
+    const loc = await resolveLocation(cache);
+    const { fc, aq } = await fetchWeather(loc);
+    const sameLoc = cache && cache.loc && Math.abs(cache.loc.lat - loc.lat) < 0.05 && Math.abs(cache.loc.lon - loc.lon) < 0.05;
+    const raw = { loc, fc, aq: aq || (sameLoc ? cache.aq : null), fetchedAt: Date.now() };
+    writeJSON(cacheFile, raw);
+    model = buildModel(raw, false);
+  } catch (e) {
+    err = e;
+    if (cache && cache.fc && !(e instanceof NotFoundError)) {
+      try { model = buildModel(cache, true); } catch (e2) { model = null; }
+    }
+  }
+  const w = model ? buildWidget(model, FAMILY) : errorWidget(err, FAMILY);
+  w.url = CONFIG.appURL;
+  w.refreshAfterDate = new Date(Date.now() + CONFIG.refreshMinutes * 60 * 1000);
+  if (config.runsInWidget) {
+    Script.setWidget(w);
+  } else if (FAMILY === "small") {
+    await w.presentSmall();
+  } else if (FAMILY === "large") {
+    await w.presentLarge();
+  } else {
+    await w.presentMedium();
+  }
+  Script.complete();
+}
+
+await main();

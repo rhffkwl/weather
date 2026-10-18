@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>하늘 날씨 위젯 설치 (Scriptable)</title>
+<style>
+:root { --bg:#f2f4f8; --card:#fff; --fg:#1c1c1e; --sub:#6b7280; --acc:#1b6cd1; --code:#0f172a; --codefg:#e2e8f0; }
+@media (prefers-color-scheme: dark) { :root { --bg:#0b0f17; --card:#161b26; --fg:#f2f2f7; --sub:#9ca3af; --acc:#5aa9ff; --code:#05080f; } }
+* { box-sizing:border-box; }
+body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif; background:var(--bg); color:var(--fg); line-height:1.6; word-break:keep-all; }
+header { background:linear-gradient(135deg,#4ba3f2,#1b6cd1); color:#fff; padding:calc(28px + env(safe-area-inset-top)) 20px 28px; }
+header h1 { margin:0 0 6px; font-size:24px; } header p { margin:0; opacity:.9; }
+main { max-width:760px; margin:0 auto; padding:16px; }
+.card { background:var(--card); border-radius:16px; padding:18px; margin:14px 0; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+h2 { font-size:18px; margin:0 0 10px; }
+ol { padding-left:22px; margin:0; } li { margin:6px 0; }
+.sub { color:var(--sub); font-size:14px; }
+a { color:var(--acc); }
+.btn { display:inline-block; border:0; border-radius:12px; padding:12px 18px; font-size:16px; font-weight:600; background:var(--acc); color:#fff; cursor:pointer; text-decoration:none; margin:4px 6px 4px 0; }
+.btn.sec { background:transparent; color:var(--acc); border:1.5px solid var(--acc); }
+pre { background:var(--code); color:var(--codefg); border-radius:12px; padding:14px; overflow:auto; max-height:420px; font-size:12px; line-height:1.45; -webkit-overflow-scrolling:touch; }
+code.k { background:rgba(127,127,127,.18); padding:1px 6px; border-radius:6px; font-size:.92em; }
+table { border-collapse:collapse; width:100%; font-size:14px; } td,th { border-bottom:1px solid rgba(127,127,127,.25); padding:6px; text-align:left; }
+.lv { display:inline-block; color:#fff; border-radius:8px; padding:0 8px; font-weight:600; }
+#toast { position:fixed; left:50%; bottom:calc(24px + env(safe-area-inset-bottom)); transform:translateX(-50%); background:rgba(0,0,0,.85); color:#fff; padding:10px 18px; border-radius:20px; opacity:0; transition:opacity .25s; pointer-events:none; }
+#toast.on { opacity:1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>☀️ 하늘 날씨 위젯</h1>
+  <p>아이폰 홈 화면용 날씨 위젯 · Scriptable 앱 · Open-Meteo 무료 데이터</p>
+</header>
+<main>
+<section class="card">
+  <h2>설치 방법</h2>
+  <ol>
+    <li>App Store에서 <a href="https://apps.apple.com/app/scriptable/id1405459188"><b>Scriptable</b></a> 앱(무료)을 설치하세요.</li>
+    <li>아래 <b>「코드 복사」</b> 버튼을 누르세요.</li>
+    <li>Scriptable 앱을 열고 오른쪽 위 <b>＋</b>를 눌러 새 스크립트를 만드세요.</li>
+    <li>빈 화면을 길게 눌러 <b>붙여넣기</b>하고, 위쪽 제목을 눌러 이름을 <code class="k">하늘 날씨</code>로 바꾼 뒤 <b>완료</b>를 누르세요.</li>
+    <li>스크립트를 한 번 눌러 실행하세요. 위치 권한을 물으면 <b>앱을 사용하는 동안 허용</b>을 고르세요. 중형 위젯 미리보기가 나오면 정상입니다.</li>
+    <li>홈 화면 빈 곳을 길게 누르고 왼쪽 위 <b>＋</b> (또는 <b>편집 › 위젯 추가</b>)를 누르세요. <b>Scriptable</b>을 찾아 소형·중형·대형 중 하나를 추가하세요.</li>
+    <li>추가한 위젯을 길게 눌러 <b>위젯 편집</b>을 고르고, <b>Script</b>를 <code class="k">하늘 날씨</code>로 지정하세요. <b>When Interacting</b>은 <code class="k">Open URL</code>로 두면 위젯을 눌렀을 때 날씨 웹앱이 열립니다.</li>
+  </ol>
+  <p class="sub">💡 위젯이 현재 위치를 쓰게 하려면 iPhone 설정 › 개인정보 보호 및 보안 › 위치 서비스 › Scriptable에서 <b>앱 또는 위젯을 사용하는 동안</b>을 선택하세요.</p>
+</section>
+
+<section class="card">
+  <h2>도시별 위젯 만들기</h2>
+  <p>위젯을 길게 눌러 <b>위젯 편집 › Parameter</b>에 도시 이름을 적으면 그 도시 날씨를 보여 줘요. 위젯을 여러 개 추가하면 좋아하는 도시마다 하나씩 둘 수 있습니다.</p>
+  <p>예: <code class="k">부산</code> <code class="k">제주</code> <code class="k">강릉</code> <code class="k">대전광역시</code> <code class="k">해운대구</code> 또는 위도·경도 <code class="k">37.57,126.98</code></p>
+  <p class="sub">비워 두면 현재 위치를 쓰고, 위치를 못 받으면 마지막 위치나 서울을 보여 줘요.</p>
+</section>
+
+<section class="card">
+  <h2>위젯 코드</h2>
+  <button class="btn" id="copyBtn" type="button">📋 코드 복사</button>
+  <a class="btn sec" href="weather.js" target="_blank" rel="noopener">원본 파일 열기</a>
+  <pre><code id="code">// Variables used by Scriptable.
+// These must be at the very top of the file. Do not edit.
+// icon-color: deep-blue; icon-glyph: cloud-sun;
+
+/*
+ * 하늘 날씨 위젯 (Scriptable)
+ * - 데이터: Open-Meteo 예보 / 대기질 / 지오코딩 (API 키 불필요)
+ * - 크기: 소형 · 중형 · 대형 (잠금화면 위젯도 간단히 지원)
+ * - 위치: 현재 위치(실패 시 마지막 위치 → 서울).
+ *   위젯 길게 누르기 &gt; 위젯 편집 &gt; Parameter 에 도시 이름(예: 부산, 제주, 강릉)을 넣으면 그 도시를 표시합니다.
+ *   &quot;37.57,126.98&quot; 처럼 위도,경도를 직접 넣어도 됩니다.
+ * - 웹앱: https://rhffkwl.github.io/weather/
+ */
+
+const CONFIG = {
+  appURL: &quot;https://rhffkwl.github.io/weather/&quot;,
+  fallback: { name: &quot;서울&quot;, lat: 37.5665, lon: 126.978 },
+  refreshMinutes: 30,
+  locationTimeout: 8,   // 초
+  requestTimeout: 12,   // 초
+  previewSize: &quot;medium&quot;, // 앱에서 실행할 때 미리보기 크기: small | medium | large
+  debugParameter: &quot;&quot;,    // 앱에서 테스트할 도시 (예: &quot;부산&quot;)
+};
+const TZ = &quot;Asia/Seoul&quot;;
+
+/* ---------------- 공통 유틸 ---------------- */
+const fm = FileManager.local();
+const DIR = fm.joinPath(fm.documentsDirectory(), &quot;weather-widget&quot;);
+if (!fm.fileExists(DIR)) fm.createDirectory(DIR, true);
+
+const PARAM = String((config.runsInWidget ? args.widgetParameter : (args.widgetParameter || CONFIG.debugParameter)) || &quot;&quot;).trim();
+const FAMILY = config.runsInWidget ? (config.widgetFamily || &quot;medium&quot;) : CONFIG.previewSize;
+
+class NotFoundError extends Error {}
+
+function pad(n) { return (n &lt; 10 ? &quot;0&quot; : &quot;&quot;) + n; }
+function seoulParts(ms) {
+  const d = new Date(ms + 9 * 3600 * 1000); // 한국은 서머타임 없음
+  return { y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, d: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes() };
+}
+function seoulISO(ms) { const p = seoulParts(ms); return `${p.y}-${pad(p.mo)}-${pad(p.d)}T${pad(p.h)}:${pad(p.mi)}`; }
+function hashStr(s) { let h = 5381; for (let i = 0; i &lt; s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) &gt;&gt;&gt; 0; return h.toString(16); }
+function qs(o) { return Object.keys(o).map(k =&gt; encodeURIComponent(k) + &quot;=&quot; + encodeURIComponent(o[k])).join(&quot;&amp;&quot;); }
+function readJSON(path) { try { if (fm.fileExists(path)) return JSON.parse(fm.readString(path)); } catch (e) {} return null; }
+function writeJSON(path, obj) { try { fm.writeString(path, JSON.stringify(obj)); } catch (e) {} }
+function isNum(v) { return typeof v === &quot;number&quot; &amp;&amp; isFinite(v); }
+function tempStr(v) { return isNum(v) ? Math.round(v) + &quot;°&quot; : &quot;--°&quot;; }
+function pctStr(v) { return isNum(v) ? Math.round(v) + &quot;%&quot; : &quot;-&quot;; }
+
+function sleep(sec) { return new Promise(r =&gt; Timer.schedule(sec * 1000, false, r)); }
+function withTimeout(p, sec, label) {
+  return Promise.race([p, sleep(sec).then(() =&gt; { throw new Error(label + &quot; 시간 초과&quot;); })]);
+}
+
+async function getJSON(url) {
+  const req = new Request(url);
+  req.timeoutInterval = CONFIG.requestTimeout;
+  const j = await req.loadJSON();
+  const sc = req.response &amp;&amp; req.response.statusCode;
+  if (sc &amp;&amp; sc &gt;= 400) throw new Error(&quot;HTTP &quot; + sc + (j &amp;&amp; j.reason ? &quot;: &quot; + j.reason : &quot;&quot;));
+  if (j &amp;&amp; j.error) throw new Error(j.reason || &quot;API 오류&quot;);
+  return j;
+}
+
+/* ---------------- 날씨 코드 ---------------- */
+function weatherInfo(code, isDay) {
+  const c = Number(code);
+  const T = (text, day, night, kind) =&gt; ({ text, symbol: isDay ? day : (night || day), kind });
+  if (c === 0) return T(&quot;맑음&quot;, &quot;sun.max.fill&quot;, &quot;moon.stars.fill&quot;, isDay ? &quot;sun&quot; : &quot;moon&quot;);
+  if (c === 1) return T(&quot;대체로 맑음&quot;, &quot;sun.max.fill&quot;, &quot;moon.fill&quot;, isDay ? &quot;sun&quot; : &quot;moon&quot;);
+  if (c === 2) return T(&quot;구름 조금&quot;, &quot;cloud.sun.fill&quot;, &quot;cloud.moon.fill&quot;, &quot;cloud&quot;);
+  if (c === 3) return T(&quot;흐림&quot;, &quot;cloud.fill&quot;, &quot;cloud.fill&quot;, &quot;cloud&quot;);
+  if (c === 45 || c === 48) return T(&quot;안개&quot;, &quot;cloud.fog.fill&quot;, &quot;cloud.fog.fill&quot;, &quot;cloud&quot;);
+  if (c &gt;= 51 &amp;&amp; c &lt;= 55) return T(&quot;이슬비&quot;, &quot;cloud.drizzle.fill&quot;, null, &quot;rain&quot;);
+  if (c === 56 || c === 57) return T(&quot;어는 이슬비&quot;, &quot;cloud.sleet.fill&quot;, null, &quot;rain&quot;);
+  if (c === 61) return T(&quot;약한 비&quot;, &quot;cloud.rain.fill&quot;, null, &quot;rain&quot;);
+  if (c === 63) return T(&quot;비&quot;, &quot;cloud.rain.fill&quot;, null, &quot;rain&quot;);
+  if (c === 65) return T(&quot;강한 비&quot;, &quot;cloud.heavyrain.fill&quot;, null, &quot;rain&quot;);
+  if (c === 66 || c === 67) return T(&quot;어는 비&quot;, &quot;cloud.sleet.fill&quot;, null, &quot;rain&quot;);
+  if (c === 71) return T(&quot;약한 눈&quot;, &quot;cloud.snow.fill&quot;, null, &quot;snow&quot;);
+  if (c === 73) return T(&quot;눈&quot;, &quot;cloud.snow.fill&quot;, null, &quot;snow&quot;);
+  if (c === 75) return T(&quot;강한 눈&quot;, &quot;snowflake&quot;, null, &quot;snow&quot;);
+  if (c === 77) return T(&quot;싸락눈&quot;, &quot;cloud.snow.fill&quot;, null, &quot;snow&quot;);
+  if (c === 80) return T(&quot;약한 소나기&quot;, &quot;cloud.sun.rain.fill&quot;, &quot;cloud.moon.rain.fill&quot;, &quot;rain&quot;);
+  if (c === 81) return T(&quot;소나기&quot;, &quot;cloud.rain.fill&quot;, null, &quot;rain&quot;);
+  if (c === 82) return T(&quot;강한 소나기&quot;, &quot;cloud.heavyrain.fill&quot;, null, &quot;rain&quot;);
+  if (c === 85 || c === 86) return T(&quot;눈 소나기&quot;, &quot;cloud.snow.fill&quot;, null, &quot;snow&quot;);
+  if (c === 95) return T(&quot;뇌우&quot;, &quot;cloud.bolt.rain.fill&quot;, null, &quot;storm&quot;);
+  if (c === 96 || c === 99) return T(&quot;우박 동반 뇌우&quot;, &quot;cloud.hail.fill&quot;, null, &quot;storm&quot;);
+  return T(&quot;알 수 없음&quot;, &quot;cloud.fill&quot;, null, &quot;cloud&quot;);
+}
+const ICON_TINT = { sun: &quot;#FFD60A&quot;, moon: &quot;#F2F2F7&quot;, cloud: &quot;#FFFFFF&quot;, rain: &quot;#9AD8FF&quot;, snow: &quot;#FFFFFF&quot;, storm: &quot;#FFD60A&quot; };
+
+/* ---------------- 미세먼지 ---------------- */
+const PM_LABELS = [&quot;좋음&quot;, &quot;보통&quot;, &quot;나쁨&quot;, &quot;매우나쁨&quot;];
+const PM_COLORS = [&quot;#2F80ED&quot;, &quot;#27AE60&quot;, &quot;#F2994A&quot;, &quot;#EB5757&quot;];
+function pmLevel(v, kind) {
+  if (!isNum(v)) return null;
+  const t = kind === &quot;pm10&quot; ? [30, 80, 150] : [15, 35, 75];
+  const i = v &lt;= t[0] ? 0 : v &lt;= t[1] ? 1 : v &lt;= t[2] ? 2 : 3;
+  return { label: PM_LABELS[i], color: PM_COLORS[i], value: Math.round(v), index: i };
+}
+
+/* ---------------- 위치 ---------------- */
+const FC_RANK = { PPLC: 6, PPLA: 5, PPLA2: 4, PPLA3: 3, PPLA4: 2, PPL: 1, ADM1: 1, ADM2: 1 };
+async function geocode(q) {
+  const variants = [q];
+  if (/[가-힣]$/.test(q) &amp;&amp; !/(시|군|구|도|읍|면|동|리)$/.test(q)) {
+    [&quot;시&quot;, &quot;특별시&quot;, &quot;광역시&quot;, &quot;특별자치시&quot;, &quot;특별자치도&quot;, &quot;군&quot;].forEach(s =&gt; variants.push(q + s));
+  }
+  let failures = 0;
+  const lists = await Promise.all(variants.map(v =&gt;
+    getJSON(&quot;https://geocoding-api.open-meteo.com/v1/search?&quot; + qs({ name: v, count: 10, language: &quot;ko&quot;, format: &quot;json&quot; }))
+      .then(j =&gt; (j &amp;&amp; j.results) || [])
+      .catch(() =&gt; { failures++; return []; })));
+  if (failures === variants.length) throw new Error(&quot;인터넷 연결을 확인해 주세요 (지역 검색 실패)&quot;);
+  const seen = {};
+  let all = [];
+  lists.forEach(l =&gt; l.forEach(r =&gt; { if (!seen[r.id]) { seen[r.id] = 1; all.push(r); } }));
+  const kr = all.filter(r =&gt; r.country_code === &quot;KR&quot;);
+  if (kr.length) all = kr;
+  const places = all.filter(r =&gt; /^(PPL|ADM)/.test(r.feature_code || &quot;&quot;));
+  if (places.length) all = places;
+  const isPPL = r =&gt; /^PPL/.test(r.feature_code || &quot;&quot;) ? 1 : 0;
+  all.sort((a, b) =&gt; (isPPL(b) - isPPL(a)) || ((b.population || 0) - (a.population || 0)) ||
+    ((FC_RANK[b.feature_code] || 0) - (FC_RANK[a.feature_code] || 0)));
+  const r = all[0];
+  if (!r) return null;
+  return { name: q, fullName: r.name, admin1: r.admin1 || &quot;&quot;, lat: r.latitude, lon: r.longitude };
+}
+
+async function resolveLocation(cache) {
+  if (PARAM) {
+    const m = PARAM.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
+    if (m) return { name: &quot;지정 위치&quot;, lat: +m[1], lon: +m[2], source: &quot;param&quot; };
+    const geoPath = fm.joinPath(DIR, &quot;geo-&quot; + hashStr(PARAM) + &quot;.json&quot;);
+    const saved = readJSON(geoPath);
+    if (saved &amp;&amp; saved.q === PARAM &amp;&amp; saved.loc) return Object.assign({}, saved.loc, { source: &quot;param&quot; });
+    const r = await geocode(PARAM);
+    if (!r) throw new NotFoundError(`&#x27;${PARAM}&#x27; 위치를 찾을 수 없어요`);
+    writeJSON(geoPath, { q: PARAM, loc: r });
+    return Object.assign({}, r, { source: &quot;param&quot; });
+  }
+  try {
+    Location.setAccuracyToThreeKilometers();
+    const l = await withTimeout(Location.current(), CONFIG.locationTimeout, &quot;위치&quot;);
+    if (!l || !isNum(l.latitude)) throw new Error(&quot;위치 없음&quot;);
+    let name = &quot;현재 위치&quot;;
+    try {
+      const rg = await withTimeout(Location.reverseGeocode(l.latitude, l.longitude, &quot;ko_KR&quot;), 5, &quot;주소&quot;);
+      const a = rg &amp;&amp; rg[0];
+      if (a) name = a.subLocality || a.locality || a.administrativeArea || name;
+    } catch (e) {}
+    return { name, lat: l.latitude, lon: l.longitude, source: &quot;gps&quot; };
+  } catch (e) {
+    if (cache &amp;&amp; cache.loc &amp;&amp; /^gps/.test(cache.loc.source)) return Object.assign({}, cache.loc, { source: &quot;gps-cached&quot; });
+    return Object.assign({}, CONFIG.fallback, { source: &quot;fallback&quot; });
+  }
+}
+
+/* ---------------- 데이터 ---------------- */
+async function fetchWeather(loc) {
+  const base = { latitude: loc.lat.toFixed(4), longitude: loc.lon.toFixed(4), timezone: TZ };
+  const fcURL = &quot;https://api.open-meteo.com/v1/forecast?&quot; + qs(Object.assign({}, base, {
+    current: &quot;temperature_2m,apparent_temperature,relative_humidity_2m,is_day,weather_code,precipitation,wind_speed_10m&quot;,
+    hourly: &quot;temperature_2m,weather_code,precipitation_probability,is_day&quot;,
+    daily: &quot;weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&quot;,
+    forecast_days: 6,
+    wind_speed_unit: &quot;ms&quot;,
+  }));
+  const aqURL = &quot;https://air-quality-api.open-meteo.com/v1/air-quality?&quot; + qs(Object.assign({}, base, { current: &quot;pm10,pm2_5&quot; }));
+  const [fc, aq] = await Promise.all([getJSON(fcURL), getJSON(aqURL).catch(() =&gt; null)]);
+  if (!fc || !fc.current || !fc.hourly || !fc.daily) throw new Error(&quot;예보 데이터가 비어 있어요&quot;);
+  return { fc, aq };
+}
+
+const DOW = [&quot;일&quot;, &quot;월&quot;, &quot;화&quot;, &quot;수&quot;, &quot;목&quot;, &quot;금&quot;, &quot;토&quot;];
+function dowLabel(dateStr) {
+  const [y, m, d] = dateStr.split(&quot;-&quot;).map(Number);
+  return DOW[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+}
+
+function buildModel(raw, offline) {
+  const { loc, fc, aq, fetchedAt } = raw;
+  const c = fc.current, h = fc.hourly, d = fc.daily;
+  const nowISO = seoulISO(Date.now());
+  const nowHour = nowISO.slice(0, 13);
+  let idx = h.time.findIndex(t =&gt; t.slice(0, 13) &gt;= nowHour);
+  if (idx &lt; 0) idx = h.time.length - 1;
+  const hours = [];
+  for (let i = idx + 1; i &lt; h.time.length &amp;&amp; hours.length &lt; 6; i++) {
+    hours.push({
+      label: Number(h.time[i].slice(11, 13)) + &quot;시&quot;,
+      temp: h.temperature_2m[i], code: h.weather_code[i],
+      isDay: h.is_day ? h.is_day[i] === 1 : true,
+      pop: h.precipitation_probability ? h.precipitation_probability[i] : null,
+    });
+  }
+  let di = d.time.indexOf(nowISO.slice(0, 10));
+  if (di &lt; 0) di = 0;
+  const days = [];
+  for (let i = di; i &lt; d.time.length &amp;&amp; days.length &lt; 5; i++) {
+    days.push({
+      label: i === di ? &quot;오늘&quot; : dowLabel(d.time[i]),
+      code: d.weather_code[i], max: d.temperature_2m_max[i], min: d.temperature_2m_min[i],
+      pop: d.precipitation_probability_max ? d.precipitation_probability_max[i] : null,
+    });
+  }
+  const aqc = aq &amp;&amp; aq.current ? aq.current : {};
+  const isDay = c.is_day === 1;
+  return {
+    place: loc.name, source: loc.source,
+    temp: c.temperature_2m, feels: c.apparent_temperature, humidity: c.relative_humidity_2m, wind: c.wind_speed_10m,
+    code: c.weather_code, isDay, info: weatherInfo(c.weather_code, isDay),
+    max: days[0] ? days[0].max : null, min: days[0] ? days[0].min : null,
+    popNow: h.precipitation_probability ? h.precipitation_probability[Math.max(idx, 0)] : null,
+    popDay: days[0] ? days[0].pop : null,
+    hours, days,
+    pm10: pmLevel(aqc.pm10, &quot;pm10&quot;), pm25: pmLevel(aqc.pm2_5, &quot;pm25&quot;),
+    fetchedAt, offline,
+  };
+}
+
+function updatedLabel(m) {
+  const p = seoulParts(m.fetchedAt), n = seoulParts(Date.now());
+  const same = p.y === n.y &amp;&amp; p.mo === n.mo &amp;&amp; p.d === n.d;
+  const t = (same ? &quot;&quot; : `${p.mo}/${p.d} `) + `${pad(p.h)}:${pad(p.mi)}`;
+  return m.offline ? `오프라인 · ${t}` : `${t} 업데이트`;
+}
+
+/* ---------------- 스타일 ---------------- */
+const WHITE = Color.white();
+const SUB = new Color(&quot;#FFFFFF&quot;, 0.78);
+const FAINT = new Color(&quot;#FFFFFF&quot;, 0.55);
+const RAIN = new Color(&quot;#9AD8FF&quot;);
+
+function dyn(light, dark) { return Color.dynamic(new Color(light), new Color(dark)); }
+function background(m) {
+  const k = m.info.kind;
+  let p;
+  if (k === &quot;storm&quot;) p = [&quot;#4A4E69&quot;, &quot;#22223B&quot;, &quot;#2B2D42&quot;, &quot;#121220&quot;];
+  else if (k === &quot;rain&quot;) p = m.isDay ? [&quot;#5B7493&quot;, &quot;#2E4561&quot;, &quot;#2A3646&quot;, &quot;#121A25&quot;] : [&quot;#2B3647&quot;, &quot;#121A26&quot;, &quot;#1B2330&quot;, &quot;#0A0F17&quot;];
+  else if (k === &quot;snow&quot;) p = m.isDay ? [&quot;#9DB2CB&quot;, &quot;#62799A&quot;, &quot;#3E4A5A&quot;, &quot;#1F2732&quot;] : [&quot;#3A4659&quot;, &quot;#1A2231&quot;, &quot;#262E3B&quot;, &quot;#0E131C&quot;];
+  else if (!m.isDay) p = k === &quot;cloud&quot; ? [&quot;#2E3748&quot;, &quot;#141A26&quot;, &quot;#1C2230&quot;, &quot;#090D15&quot;] : [&quot;#1B2A4E&quot;, &quot;#0A1128&quot;, &quot;#111A33&quot;, &quot;#04070F&quot;];
+  else if (k === &quot;cloud&quot;) p = [&quot;#7E95B0&quot;, &quot;#4E6685&quot;, &quot;#384556&quot;, &quot;#1D2633&quot;];
+  else p = [&quot;#4BA3F2&quot;, &quot;#1B6CD1&quot;, &quot;#1D3E6E&quot;, &quot;#0D213F&quot;];
+  const g = new LinearGradient();
+  g.colors = [dyn(p[0], p[2]), dyn(p[1], p[3])];
+  g.locations = [0, 1];
+  return g;
+}
+
+function addText(stack, str, font, color, align) {
+  const t = stack.addText(String(str));
+  t.font = font;
+  t.textColor = color || WHITE;
+  t.lineLimit = 1;
+  t.minimumScaleFactor = 0.6;
+  if (align === &quot;right&quot;) t.rightAlignText();
+  else if (align === &quot;center&quot;) t.centerAlignText();
+  return t;
+}
+function addSymbol(stack, name, size, color) {
+  const s = SFSymbol.named(name) || SFSymbol.named(&quot;cloud.fill&quot;);
+  s.applyFont(Font.systemFont(size));
+  const img = stack.addImage(s.image);
+  img.imageSize = new Size(size, size);
+  img.tintColor = color || WHITE;
+  return img;
+}
+function weatherIcon(stack, code, isDay, size) {
+  const info = weatherInfo(code, isDay);
+  return addSymbol(stack, info.symbol, size, new Color(ICON_TINT[info.kind] || &quot;#FFFFFF&quot;));
+}
+function pill(stack, text, hex, size) {
+  const p = stack.addStack();
+  p.backgroundColor = new Color(hex, 0.92);
+  p.cornerRadius = size;
+  p.setPadding(2, 6, 2, 6);
+  p.centerAlignContent();
+  addText(p, text, Font.semiboldSystemFont(size), WHITE);
+  return p;
+}
+function pm25Pill(stack, m, size) {
+  if (m.pm25) return pill(stack, `초미세 ${m.pm25.label}`, m.pm25.color, size);
+  return pill(stack, &quot;초미세 -&quot;, &quot;#8E8E93&quot;, size);
+}
+function placeRow(stack, m, size) {
+  const r = stack.addStack();
+  r.centerAlignContent();
+  if (/^gps/.test(m.source)) { addSymbol(r, &quot;location.fill&quot;, size - 3, WHITE); r.addSpacer(3); }
+  addText(r, m.place, Font.semiboldSystemFont(size), WHITE);
+  return r;
+}
+function hourlyRow(stack, m, opts) {
+  const row = stack.addStack();
+  row.layoutHorizontally();
+  const list = m.hours.length ? m.hours : [];
+  list.forEach((h, i) =&gt; {
+    if (i &gt; 0) row.addSpacer();
+    const col = row.addStack();
+    col.layoutVertically();
+    col.centerAlignContent();
+    const c1 = col.addStack(); c1.addSpacer(); addText(c1, h.label, Font.mediumSystemFont(opts.font - 1), SUB); c1.addSpacer();
+    col.addSpacer(3);
+    const c2 = col.addStack(); c2.addSpacer(); weatherIcon(c2, h.code, h.isDay, opts.icon); c2.addSpacer();
+    col.addSpacer(3);
+    const c3 = col.addStack(); c3.addSpacer(); addText(c3, tempStr(h.temp), Font.semiboldSystemFont(opts.font + 1), WHITE); c3.addSpacer();
+    const c4 = col.addStack(); c4.addSpacer();
+    addText(c4, isNum(h.pop) &amp;&amp; h.pop &gt; 0 ? pctStr(h.pop) : &quot; &quot;, Font.mediumSystemFont(opts.font - 2), RAIN); c4.addSpacer();
+  });
+  if (!list.length) addText(row, &quot;시간별 예보 없음&quot;, Font.systemFont(opts.font), SUB);
+  return row;
+}
+
+/* ---------------- 레이아웃 ---------------- */
+function smallWidget(w, m) {
+  w.setPadding(14, 14, 12, 14);
+  const top = w.addStack(); top.centerAlignContent();
+  placeRow(top, m, 13);
+  top.addSpacer();
+  w.addSpacer(2);
+  const row = w.addStack(); row.centerAlignContent();
+  addText(row, tempStr(m.temp), Font.boldSystemFont(38), WHITE);
+  row.addSpacer();
+  weatherIcon(row, m.code, m.isDay, 30);
+  addText(w, m.info.text, Font.mediumSystemFont(12), WHITE);
+  addText(w, `최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(11), SUB);
+  w.addSpacer();
+  const bot = w.addStack(); bot.centerAlignContent();
+  pm25Pill(bot, m, 10);
+  bot.addSpacer();
+  addText(bot, updatedLabel(m).replace(&quot; 업데이트&quot;, &quot;&quot;), Font.systemFont(9), FAINT);
+}
+
+function mediumWidget(w, m) {
+  w.setPadding(14, 16, 12, 14);
+  const main = w.addStack(); main.layoutHorizontally();
+  const left = main.addStack(); left.layoutVertically(); left.size = new Size(118, 0);
+  placeRow(left, m, 13);
+  const tr = left.addStack(); tr.centerAlignContent();
+  addText(tr, tempStr(m.temp), Font.boldSystemFont(34), WHITE);
+  tr.addSpacer(6);
+  weatherIcon(tr, m.code, m.isDay, 24);
+  tr.addSpacer();
+  addText(left, m.info.text, Font.mediumSystemFont(12), WHITE);
+  addText(left, `최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(10), SUB);
+  addText(left, `체감 ${tempStr(m.feels)} · 강수 ${pctStr(isNum(m.popNow) ? m.popNow : m.popDay)}`, Font.systemFont(10), SUB);
+  left.addSpacer();
+  pm25Pill(left, m, 10);
+
+  main.addSpacer(10);
+  const right = main.addStack(); right.layoutVertically();
+  const hdr = right.addStack(); hdr.centerAlignContent();
+  addText(hdr, &quot;시간별&quot;, Font.semiboldSystemFont(10), SUB);
+  hdr.addSpacer();
+  addText(hdr, updatedLabel(m), Font.systemFont(9), FAINT);
+  right.addSpacer();
+  hourlyRow(right, m, { font: 11, icon: 18 });
+  right.addSpacer();
+}
+
+function tempBar(stack, d, lo, hi, width) {
+  const bar = stack.addStack();
+  bar.size = new Size(width, 5);
+  bar.cornerRadius = 2.5;
+  bar.backgroundColor = new Color(&quot;#FFFFFF&quot;, 0.22);
+  bar.layoutHorizontally();
+  if (!isNum(d.min) || !isNum(d.max) || !(hi &gt; lo)) return;
+  const x = Math.max(0, Math.round((d.min - lo) / (hi - lo) * width));
+  const bw = Math.max(6, Math.round((d.max - d.min) / (hi - lo) * width));
+  if (x &gt; 0) bar.addSpacer(Math.min(x, width - bw));
+  const fill = bar.addStack();
+  fill.size = new Size(bw, 5);
+  fill.cornerRadius = 2.5;
+  fill.backgroundColor = new Color(&quot;#FFD60A&quot;, 0.95);
+  bar.addSpacer();
+}
+
+function airBlock(stack, title, sub, lvl) {
+  const s = stack.addStack(); s.layoutVertically();
+  const t = s.addStack(); t.centerAlignContent();
+  addText(t, title, Font.semiboldSystemFont(11), WHITE);
+  t.addSpacer(3);
+  addText(t, sub, Font.systemFont(9), FAINT);
+  s.addSpacer(3);
+  const v = s.addStack(); v.centerAlignContent();
+  if (lvl) {
+    pill(v, lvl.label, lvl.color, 10);
+    v.addSpacer(5);
+    addText(v, `${lvl.value}㎍/㎥`, Font.mediumSystemFont(11), SUB);
+  } else {
+    addText(v, &quot;정보 없음&quot;, Font.systemFont(11), SUB);
+  }
+  return s;
+}
+
+function largeWidget(w, m) {
+  w.setPadding(16, 16, 14, 16);
+  const hdr = w.addStack(); hdr.centerAlignContent();
+  placeRow(hdr, m, 15);
+  hdr.addSpacer();
+  addText(hdr, updatedLabel(m), Font.systemFont(10), FAINT);
+  w.addSpacer(6);
+
+  const cur = w.addStack(); cur.centerAlignContent();
+  weatherIcon(cur, m.code, m.isDay, 42);
+  cur.addSpacer(10);
+  addText(cur, tempStr(m.temp), Font.boldSystemFont(46), WHITE);
+  cur.addSpacer();
+  const info = cur.addStack(); info.layoutVertically();
+  const lines = [
+    [m.info.text, Font.semiboldSystemFont(14), WHITE],
+    [`최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(11), SUB],
+    [`체감 ${tempStr(m.feels)} · 강수 ${pctStr(isNum(m.popNow) ? m.popNow : m.popDay)}`, Font.systemFont(11), SUB],
+    [`습도 ${pctStr(m.humidity)} · 바람 ${isNum(m.wind) ? m.wind.toFixed(1) : &quot;-&quot;}m/s`, Font.systemFont(11), SUB],
+  ];
+  lines.forEach(([s, f, c]) =&gt; { const r = info.addStack(); r.addSpacer(); addText(r, s, f, c, &quot;right&quot;); });
+
+  w.addSpacer();
+  hourlyRow(w, m, { font: 11, icon: 18 });
+  w.addSpacer();
+
+  const air = w.addStack(); air.layoutHorizontally();
+  airBlock(air, &quot;미세먼지&quot;, &quot;PM10&quot;, m.pm10);
+  air.addSpacer();
+  airBlock(air, &quot;초미세먼지&quot;, &quot;PM2.5&quot;, m.pm25);
+  air.addSpacer();
+  w.addSpacer();
+
+  const valid = m.days.filter(d =&gt; isNum(d.min) &amp;&amp; isNum(d.max));
+  const lo = valid.length ? Math.min(...valid.map(d =&gt; d.min)) : 0;
+  const hi = valid.length ? Math.max(...valid.map(d =&gt; d.max)) : 1;
+  m.days.forEach((d, i) =&gt; {
+    if (i &gt; 0) w.addSpacer(4);
+    const r = w.addStack(); r.centerAlignContent();
+    const l = r.addStack(); l.size = new Size(34, 18); l.centerAlignContent();
+    addText(l, d.label, Font.semiboldSystemFont(12), WHITE); l.addSpacer();
+    const ic = r.addStack(); ic.size = new Size(24, 18); ic.centerAlignContent();
+    weatherIcon(ic, d.code, true, 16);
+    const pp = r.addStack(); pp.size = new Size(38, 18); pp.centerAlignContent();
+    addText(pp, isNum(d.pop) &amp;&amp; d.pop &gt; 0 ? pctStr(d.pop) : &quot;&quot;, Font.mediumSystemFont(10), RAIN); pp.addSpacer();
+    r.addSpacer();
+    const mn = r.addStack(); mn.size = new Size(32, 18); mn.centerAlignContent(); mn.addSpacer();
+    addText(mn, tempStr(d.min), Font.mediumSystemFont(12), SUB);
+    r.addSpacer(8);
+    tempBar(r, d, lo, hi, 90);
+    r.addSpacer(8);
+    const mx = r.addStack(); mx.size = new Size(32, 18); mx.centerAlignContent();
+    addText(mx, tempStr(d.max), Font.semiboldSystemFont(12), WHITE); mx.addSpacer();
+  });
+}
+
+function accessoryWidget(w, m, family) {
+  if (family === &quot;accessoryInline&quot;) {
+    addText(w, `${m.place} ${tempStr(m.temp)} ${m.info.text}`, Font.systemFont(12), WHITE);
+    return;
+  }
+  if (family === &quot;accessoryCircular&quot;) {
+    w.addAccessoryWidgetBackground = true;
+    const c = w.addStack(); c.layoutVertically(); c.centerAlignContent();
+    const a = c.addStack(); a.addSpacer(); weatherIcon(a, m.code, m.isDay, 16); a.addSpacer();
+    const b = c.addStack(); b.addSpacer(); addText(b, tempStr(m.temp), Font.semiboldSystemFont(14), WHITE); b.addSpacer();
+    return;
+  }
+  const r = w.addStack(); r.centerAlignContent();
+  weatherIcon(r, m.code, m.isDay, 14); r.addSpacer(4);
+  addText(r, `${m.place} ${tempStr(m.temp)}`, Font.semiboldSystemFont(13), WHITE);
+  addText(w, `${m.info.text} · ${tempStr(m.max)}/${tempStr(m.min)}`, Font.systemFont(11), WHITE);
+  addText(w, `초미세 ${m.pm25 ? m.pm25.label : &quot;-&quot;} · 강수 ${pctStr(m.popDay)}`, Font.systemFont(11), WHITE);
+}
+
+function buildWidget(m, family) {
+  const w = new ListWidget();
+  if (/^accessory/.test(family)) { accessoryWidget(w, m, family); return w; }
+  w.backgroundGradient = background(m);
+  if (family === &quot;small&quot;) smallWidget(w, m);
+  else if (family === &quot;large&quot; || family === &quot;extraLarge&quot;) largeWidget(w, m);
+  else mediumWidget(w, m);
+  return w;
+}
+
+function errorWidget(err, family) {
+  const w = new ListWidget();
+  if (!/^accessory/.test(family)) {
+    const g = new LinearGradient();
+    g.colors = [dyn(&quot;#6B7A8F&quot;, &quot;#2C333D&quot;), dyn(&quot;#3E4A5C&quot;, &quot;#14181E&quot;)];
+    g.locations = [0, 1];
+    w.backgroundGradient = g;
+    w.setPadding(14, 14, 14, 14);
+  }
+  addSymbol(w, &quot;exclamationmark.icloud.fill&quot;, 22, WHITE);
+  w.addSpacer(6);
+  const t = addText(w, &quot;날씨를 불러올 수 없어요&quot;, Font.semiboldSystemFont(13), WHITE); t.lineLimit = 2;
+  w.addSpacer(2);
+  let msg = (err &amp;&amp; err.message) || &quot;알 수 없는 오류&quot;;
+  if (!(err instanceof NotFoundError) &amp;&amp; !/[가-힣]/.test(msg)) msg = &quot;인터넷 연결을 확인해 주세요 (&quot; + msg + &quot;)&quot;;
+  const d = addText(w, msg, Font.systemFont(10), SUB); d.lineLimit = 3;
+  w.addSpacer();
+  addText(w, &quot;잠시 후 자동으로 다시 시도해요&quot;, Font.systemFont(9), FAINT);
+  return w;
+}
+
+/* ---------------- 실행 ---------------- */
+async function main() {
+  const cacheFile = fm.joinPath(DIR, &quot;cache-&quot; + (PARAM ? &quot;p&quot; + hashStr(PARAM) : &quot;here&quot;) + &quot;.json&quot;);
+  const cache = readJSON(cacheFile);
+  let model = null, err = null;
+  try {
+    const loc = await resolveLocation(cache);
+    const { fc, aq } = await fetchWeather(loc);
+    const sameLoc = cache &amp;&amp; cache.loc &amp;&amp; Math.abs(cache.loc.lat - loc.lat) &lt; 0.05 &amp;&amp; Math.abs(cache.loc.lon - loc.lon) &lt; 0.05;
+    const raw = { loc, fc, aq: aq || (sameLoc ? cache.aq : null), fetchedAt: Date.now() };
+    writeJSON(cacheFile, raw);
+    model = buildModel(raw, false);
+  } catch (e) {
+    err = e;
+    if (cache &amp;&amp; cache.fc &amp;&amp; !(e instanceof NotFoundError)) {
+      try { model = buildModel(cache, true); } catch (e2) { model = null; }
+    }
+  }
+  const w = model ? buildWidget(model, FAMILY) : errorWidget(err, FAMILY);
+  w.url = CONFIG.appURL;
+  w.refreshAfterDate = new Date(Date.now() + CONFIG.refreshMinutes * 60 * 1000);
+  if (config.runsInWidget) {
+    Script.setWidget(w);
+  } else if (FAMILY === &quot;small&quot;) {
+    await w.presentSmall();
+  } else if (FAMILY === &quot;large&quot;) {
+    await w.presentLarge();
+  } else {
+    await w.presentMedium();
+  }
+  Script.complete();
+}
+
+await main();
+</code></pre>
+</section>
+
+<section class="card">
+  <h2>다른 방법: 설치기로 받기</h2>
+  <p class="sub">긴 코드를 붙여넣기 어렵다면, 아래 짧은 코드를 새 스크립트에 붙여넣고 실행하세요. 최신 위젯 코드를 받아 <code class="k">하늘 날씨</code> 스크립트로 저장해 줍니다. 나중에 다시 실행하면 최신 버전으로 업데이트됩니다.</p>
+  <button class="btn sec" id="copyLoader" type="button">📋 설치기 복사</button>
+  <pre><code id="loader">// 하늘 날씨 위젯 설치기: 이 코드를 새 스크립트에 붙여넣고 ▶ 실행하세요.
+const url = &quot;https://rhffkwl.github.io/weather/widget/weather.js?t=&quot; + Date.now();
+const code = await new Request(url).loadString();
+let fm = FileManager.local();
+try { const ic = FileManager.iCloud(); if (fm.fileExists(ic.documentsDirectory())) fm = ic; } catch (e) {}
+const path = fm.joinPath(fm.documentsDirectory(), &quot;하늘 날씨.js&quot;);
+fm.writeString(path, code);
+const a = new Alert();
+a.title = &quot;설치 완료&quot;;
+a.message = &quot;&#x27;하늘 날씨&#x27; 스크립트가 생겼어요. 스크립트 목록으로 돌아가 확인하세요.&quot;;
+a.addAction(&quot;확인&quot;);
+await a.present();</code></pre>
+</section>
+
+<section class="card">
+  <h2>위젯 크기별 내용</h2>
+  <table>
+    <tr><th>소형</th><td>지역, 현재 기온, 날씨 아이콘, 최고·최저, 초미세먼지</td></tr>
+    <tr><th>중형</th><td>소형 내용 + 체감온도·강수확률 + 앞으로 6시간 예보</td></tr>
+    <tr><th>대형</th><td>중형 내용 + 습도·바람 + 미세먼지/초미세먼지 등급 + 5일 예보</td></tr>
+  </table>
+  <h2 style="margin-top:16px">미세먼지 등급</h2>
+  <table>
+    <tr><th></th><th><span class="lv" style="background:#2F80ED">좋음</span></th><th><span class="lv" style="background:#27AE60">보통</span></th><th><span class="lv" style="background:#F2994A">나쁨</span></th><th><span class="lv" style="background:#EB5757">매우나쁨</span></th></tr>
+    <tr><td>PM10</td><td>0–30</td><td>31–80</td><td>81–150</td><td>151+</td></tr>
+    <tr><td>PM2.5</td><td>0–15</td><td>16–35</td><td>36–75</td><td>76+</td></tr>
+  </table>
+  <p class="sub">단위 ㎍/㎥. 약 30분마다 새로 고쳐요(iOS가 실제 시간을 정합니다). 인터넷이 없으면 마지막 데이터를 「오프라인」으로 표시해요.</p>
+</section>
+
+<p class="sub" style="text-align:center">데이터: <a href="https://open-meteo.com/">Open-Meteo</a> (CC BY 4.0) · 대기질은 모델 추정치라 에어코리아 측정값과 다를 수 있어요 · <a href="../">하늘 날씨 웹앱</a></p>
+</main>
+<div id="toast"></div>
+<script>
+function toast(m) { const t = document.getElementById('toast'); t.textContent = m; t.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 1800); }
+async function copyFrom(id) {
+  const text = document.getElementById(id).textContent;
+  try { await navigator.clipboard.writeText(text); toast('복사했어요! Scriptable에 붙여넣으세요'); return; } catch (e) {}
+  const ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.top = '-1000px';
+  document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+  let ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(ta);
+  toast(ok ? '복사했어요! Scriptable에 붙여넣으세요' : '복사에 실패했어요. 코드를 길게 눌러 직접 복사하세요');
+}
+document.getElementById('copyBtn').addEventListener('click', () => copyFrom('code'));
+document.getElementById('copyLoader').addEventListener('click', () => copyFrom('loader'));
+</script>
+</body>
+</html>
