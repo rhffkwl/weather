@@ -1,5 +1,5 @@
 /* 하늘 날씨 service worker: offline app shell + last API responses */
-const VERSION = 'v2';
+const VERSION = 'v4';
 const SHELL = `shell-${VERSION}`, DATA = 'data-v1';
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.json', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png'];
 const API_HOSTS = ['api.open-meteo.com', 'air-quality-api.open-meteo.com', 'geocoding-api.open-meteo.com', 'api.bigdatacloud.net'];
@@ -19,6 +19,15 @@ self.addEventListener('fetch', e => {
       if (res.ok) { const copy = res.clone(); caches.open(DATA).then(c => c.put(req, copy)); }
       return res;
     }).catch(() => caches.match(req).then(r => r || Response.error())));
+    return;
+  }
+  if (url.origin === self.location.origin && url.pathname.includes('/data/')) {
+    // live data (data/airkorea.json): always network first, never serve a stale copy while online
+    const key = new Request(url.origin + url.pathname);
+    e.respondWith(fetch(req, { cache: 'no-store' }).then(res => {
+      if (res.ok) { const copy = res.clone(); caches.open(DATA).then(c => c.put(key, copy)); }
+      return res;
+    }).catch(() => caches.match(key).then(r => r || Response.error())));
     return;
   }
   if (url.origin === self.location.origin) {

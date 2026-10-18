@@ -31,7 +31,7 @@ table { border-collapse:collapse; width:100%; font-size:14px; } td,th { border-b
 <body>
 <header>
   <h1>☀️ 하늘 날씨 위젯</h1>
-  <p>아이폰 홈 화면용 날씨 위젯 · Scriptable 앱 · Open-Meteo 무료 데이터</p>
+  <p>아이폰 홈 화면용 날씨 위젯 · Scriptable 앱 · Open-Meteo 예보 + 에어코리아 미세먼지 실측</p>
 </header>
 <main>
 <section class="card">
@@ -65,7 +65,9 @@ table { border-collapse:collapse; width:100%; font-size:14px; } td,th { border-b
 
 /*
  * 하늘 날씨 위젯 (Scriptable)
- * - 데이터: Open-Meteo 예보 / 대기질 / 지오코딩 (API 키 불필요)
+ * - 데이터: Open-Meteo 예보 / 지오코딩 (API 키 불필요)
+ *   미세먼지: 에어코리아(한국환경공단) 실시간 측정값 — 가장 가까운 측정소.
+ *   (3시간 넘게 오래됐거나 값이 없으면 Open-Meteo 예측값으로 대신 표시)
  * - 크기: 소형 · 중형 · 대형 (잠금화면 위젯도 간단히 지원)
  * - 위치: 현재 위치(실패 시 마지막 위치 → 서울).
  *   위젯 길게 누르기 &gt; 위젯 편집 &gt; Parameter 에 도시 이름(예: 부산, 제주, 강릉)을 넣으면 그 도시를 표시합니다.
@@ -75,6 +77,7 @@ table { border-collapse:collapse; width:100%; font-size:14px; } td,th { border-b
 
 const CONFIG = {
   appURL: &quot;https://rhffkwl.github.io/weather/&quot;,
+  airKoreaURL: &quot;https://rhffkwl.github.io/weather/data/airkorea.json&quot;,
   fallback: { name: &quot;서울&quot;, lat: 37.5665, lon: 126.978 },
   refreshMinutes: 30,
   locationTimeout: 8,   // 초
@@ -155,12 +158,36 @@ const ICON_TINT = { sun: &quot;#FFD60A&quot;, moon: &quot;#F2F2F7&quot;, cloud: 
 /* ---------------- 미세먼지 ---------------- */
 const PM_LABELS = [&quot;좋음&quot;, &quot;보통&quot;, &quot;나쁨&quot;, &quot;매우나쁨&quot;];
 const PM_COLORS = [&quot;#2F80ED&quot;, &quot;#27AE60&quot;, &quot;#F2994A&quot;, &quot;#EB5757&quot;];
-function pmLevel(v, kind) {
+function pmLevel(v, kind, src) {
   if (!isNum(v)) return null;
   const t = kind === &quot;pm10&quot; ? [30, 80, 150] : [15, 35, 75];
   const i = v &lt;= t[0] ? 0 : v &lt;= t[1] ? 1 : v &lt;= t[2] ? 2 : 3;
-  return { label: PM_LABELS[i], color: PM_COLORS[i], value: Math.round(v), index: i };
+  return { label: PM_LABELS[i], color: PM_COLORS[i], value: Math.round(v), index: i, src: src || &quot;model&quot; };
 }
+/* AirKorea 실측 (에어코리아, 한국환경공단) */
+const AK_MAX_KM = 25, AK_STALE_MS = 3 * 3600 * 1000;
+function akTime(s) { const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)/.exec(s || &quot;&quot;); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - 9, +m[5]) : NaN; }
+function akKm(a, b, c, d) { const R = 6371, r = Math.PI / 180, x = Math.sin((c - a) * r / 2), y = Math.sin((d - b) * r / 2); return 2 * R * Math.asin(Math.sqrt(x * x + Math.cos(a * r) * Math.cos(c * r) * y * y)); }
+// → { pm10: {v, name, sido, time, t, km} | null, pm25: ... } (nearest fresh station with a valid value; roadside stations only if nothing else in range)
+function akNearest(doc, lat, lon, now) {
+  if (!doc || !Array.isArray(doc.stations) || !Array.isArray(doc.fields)) return null;
+  now = now || Date.now();
+  const F = {}; doc.fields.forEach((f, i) =&gt; F[f] = i);
+  const near = [];
+  for (const r of doc.stations) {
+    const t = akTime(r[F.dataTime]);
+    if (!(now - t &lt;= AK_STALE_MS)) continue;
+    const km = akKm(lat, lon, r[F.lat], r[F.lon]);
+    if (km &lt;= AK_MAX_KM) near.push({ r, km, t, road: r[F.net] === &quot;도로변대기&quot; });
+  }
+  near.sort((a, b) =&gt; (a.road - b.road) || (a.km - b.km));
+  const pick = k =&gt; { const x = near.find(n =&gt; typeof n.r[F[k]] === &quot;number&quot; &amp;&amp; isFinite(n.r[F[k]]) &amp;&amp; n.r[F[k]] &gt;= 0); return x ? { v: x.r[F[k]], name: x.r[F.name], sido: x.r[F.sido], time: x.r[F.dataTime], t: x.t, km: Math.round(x.km * 10) / 10 } : null; };
+  const out = { pm10: pick(&quot;pm10&quot;), pm25: pick(&quot;pm25&quot;) };
+  return (out.pm10 || out.pm25) ? out : null;
+}
+function akFresh(x, now) { return !!(x &amp;&amp; now - x.t &lt;= AK_STALE_MS); }
+function akHour(x) { return x &amp;&amp; x.time ? Number(x.time.slice(11, 13)) + &quot;시&quot; : &quot;&quot;; }
+
 
 /* ---------------- 위치 ---------------- */
 const FC_RANK = { PPLC: 6, PPLA: 5, PPLA2: 4, PPLA3: 3, PPLA4: 2, PPL: 1, ADM1: 1, ADM2: 1 };
@@ -230,9 +257,11 @@ async function fetchWeather(loc) {
     wind_speed_unit: &quot;ms&quot;,
   }));
   const aqURL = &quot;https://air-quality-api.open-meteo.com/v1/air-quality?&quot; + qs(Object.assign({}, base, { current: &quot;pm10,pm2_5&quot; }));
-  const [fc, aq] = await Promise.all([getJSON(fcURL), getJSON(aqURL).catch(() =&gt; null)]);
+  const akURL = CONFIG.airKoreaURL + &quot;?t=&quot; + Math.floor(Date.now() / 300000);
+  const [fc, aq, ak] = await Promise.all([getJSON(fcURL), getJSON(aqURL).catch(() =&gt; null),
+    getJSON(akURL).then(doc =&gt; akNearest(doc, loc.lat, loc.lon)).catch(() =&gt; null)]);
   if (!fc || !fc.current || !fc.hourly || !fc.daily) throw new Error(&quot;예보 데이터가 비어 있어요&quot;);
-  return { fc, aq };
+  return { fc, aq, ak };
 }
 
 const DOW = [&quot;일&quot;, &quot;월&quot;, &quot;화&quot;, &quot;수&quot;, &quot;목&quot;, &quot;금&quot;, &quot;토&quot;];
@@ -242,7 +271,7 @@ function dowLabel(dateStr) {
 }
 
 function buildModel(raw, offline) {
-  const { loc, fc, aq, fetchedAt } = raw;
+  const { loc, fc, aq, ak, fetchedAt } = raw;
   const c = fc.current, h = fc.hourly, d = fc.daily;
   const nowISO = seoulISO(Date.now());
   const nowHour = nowISO.slice(0, 13);
@@ -277,11 +306,21 @@ function buildModel(raw, offline) {
     popNow: h.precipitation_probability ? h.precipitation_probability[Math.max(idx, 0)] : null,
     popDay: days[0] ? days[0].pop : null,
     hours, days,
-    pm10: pmLevel(aqc.pm10, &quot;pm10&quot;), pm25: pmLevel(aqc.pm2_5, &quot;pm25&quot;),
+    pm10: pmPick(ak &amp;&amp; ak.pm10, aqc.pm10, &quot;pm10&quot;), pm25: pmPick(ak &amp;&amp; ak.pm25, aqc.pm2_5, &quot;pm25&quot;),
     fetchedAt, offline,
   };
 }
 
+// 실측(에어코리아) 우선, 오래됐거나(&gt;3h) 없으면 Open-Meteo 예측값
+function pmPick(a, model, kind) {
+  if (akFresh(a, Date.now()) &amp;&amp; isNum(a.v)) return Object.assign(pmLevel(a.v, kind, &quot;ak&quot;), { station: a.name, hour: akHour(a) });
+  return pmLevel(model, kind, &quot;model&quot;);
+}
+function airSourceLabel(m) {
+  const a = (m.pm25 &amp;&amp; m.pm25.src === &quot;ak&quot;) ? m.pm25 : (m.pm10 &amp;&amp; m.pm10.src === &quot;ak&quot;) ? m.pm10 : null;
+  if (a) return `측정소 ${a.station} · ${a.hour} 기준 · 에어코리아`;
+  return (m.pm10 || m.pm25) ? &quot;예측값 · Open-Meteo 대기질 모델&quot; : &quot;&quot;;
+}
 function updatedLabel(m) {
   const p = seoulParts(m.fetchedAt), n = seoulParts(Date.now());
   const same = p.y === n.y &amp;&amp; p.mo === n.mo &amp;&amp; p.d === n.d;
@@ -375,50 +414,76 @@ function hourlyRow(stack, m, opts) {
 }
 
 /* ---------------- 레이아웃 ---------------- */
+// 소형/중형은 가장 작은 아이폰(소형 141pt, 중형 292x141pt) 기준으로 고정 폭을 써서 잘림을 막습니다.
+function fixedBox(stack, w, h) { const b = stack.addStack(); b.size = new Size(w, h); b.centerAlignContent(); return b; }
+function centerText(stack, w, h, str, font, color) { const b = fixedBox(stack, w, h); b.addSpacer(); const t = addText(b, str, font, color, &quot;center&quot;); b.addSpacer(); return t; }
+
 function smallWidget(w, m) {
-  w.setPadding(14, 14, 12, 14);
+  w.setPadding(12, 12, 12, 12);
   const top = w.addStack(); top.centerAlignContent();
-  placeRow(top, m, 13);
+  placeRow(top, m, 12);
   top.addSpacer();
   w.addSpacer(2);
   const row = w.addStack(); row.centerAlignContent();
-  addText(row, tempStr(m.temp), Font.boldSystemFont(38), WHITE);
+  addText(row, tempStr(m.temp), Font.boldSystemFont(34), WHITE);
   row.addSpacer();
-  weatherIcon(row, m.code, m.isDay, 30);
+  weatherIcon(row, m.code, m.isDay, 26);
   addText(w, m.info.text, Font.mediumSystemFont(12), WHITE);
-  addText(w, `최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(11), SUB);
+  addText(w, `최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(10), SUB);
   w.addSpacer();
   const bot = w.addStack(); bot.centerAlignContent();
-  pm25Pill(bot, m, 10);
+  pm25Pill(bot, m, 9);
+  bot.addSpacer(4);
   bot.addSpacer();
-  addText(bot, updatedLabel(m).replace(&quot; 업데이트&quot;, &quot;&quot;), Font.systemFont(9), FAINT);
+  addText(bot, updatedLabel(m).replace(&quot; 업데이트&quot;, &quot;&quot;), Font.systemFont(8), FAINT);
 }
 
+const MED = { left: 96, gap: 8, right: 160, cols: 5 };
+function mediumHourly(stack, m) {
+  const cw = Math.floor(MED.right / MED.cols);
+  const row = stack.addStack(); row.layoutHorizontally(); row.size = new Size(MED.right, 0);
+  const list = m.hours.slice(0, MED.cols);
+  if (!list.length) { addText(row, &quot;시간별 예보 없음&quot;, Font.systemFont(10), SUB); return row; }
+  list.forEach(h =&gt; {
+    const col = row.addStack(); col.layoutVertically(); col.size = new Size(cw, 0);
+    centerText(col, cw, 13, h.label, Font.mediumSystemFont(10), SUB);
+    col.addSpacer(2);
+    const ic = fixedBox(col, cw, 18); ic.addSpacer(); weatherIcon(ic, h.code, h.isDay, 17); ic.addSpacer();
+    col.addSpacer(2);
+    centerText(col, cw, 15, tempStr(h.temp), Font.semiboldSystemFont(12), WHITE);
+    centerText(col, cw, 10, isNum(h.pop) &amp;&amp; h.pop &gt; 0 ? pctStr(h.pop) : &quot; &quot;, Font.mediumSystemFont(8), RAIN);
+  });
+  return row;
+}
 function mediumWidget(w, m) {
-  w.setPadding(14, 16, 12, 14);
+  w.setPadding(12, 14, 12, 12);
   const main = w.addStack(); main.layoutHorizontally();
-  const left = main.addStack(); left.layoutVertically(); left.size = new Size(118, 0);
-  placeRow(left, m, 13);
-  const tr = left.addStack(); tr.centerAlignContent();
-  addText(tr, tempStr(m.temp), Font.boldSystemFont(34), WHITE);
-  tr.addSpacer(6);
-  weatherIcon(tr, m.code, m.isDay, 24);
+  const left = main.addStack(); left.layoutVertically(); left.size = new Size(MED.left, 0);
+  placeRow(left, m, 12);
+  left.addSpacer(1);
+  const tr = left.addStack(); tr.centerAlignContent(); tr.size = new Size(MED.left, 34);
+  addText(tr, tempStr(m.temp), Font.boldSystemFont(28), WHITE);
+  tr.addSpacer(4);
+  weatherIcon(tr, m.code, m.isDay, 20);
   tr.addSpacer();
-  addText(left, m.info.text, Font.mediumSystemFont(12), WHITE);
+  addText(left, m.info.text, Font.mediumSystemFont(11), WHITE);
   addText(left, `최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(10), SUB);
   addText(left, `체감 ${tempStr(m.feels)} · 강수 ${pctStr(isNum(m.popNow) ? m.popNow : m.popDay)}`, Font.systemFont(10), SUB);
   left.addSpacer();
-  pm25Pill(left, m, 10);
+  const pr = left.addStack(); pr.size = new Size(MED.left, 16); pr.centerAlignContent();
+  pm25Pill(pr, m, 9); pr.addSpacer();
 
-  main.addSpacer(10);
-  const right = main.addStack(); right.layoutVertically();
-  const hdr = right.addStack(); hdr.centerAlignContent();
-  addText(hdr, &quot;시간별&quot;, Font.semiboldSystemFont(10), SUB);
+  main.addSpacer(MED.gap);
+  const right = main.addStack(); right.layoutVertically(); right.size = new Size(MED.right, 0);
+  const hdr = right.addStack(); hdr.centerAlignContent(); hdr.size = new Size(MED.right, 13);
+  addText(hdr, &quot;시간별 예보&quot;, Font.semiboldSystemFont(10), SUB);
   hdr.addSpacer();
-  addText(hdr, updatedLabel(m), Font.systemFont(9), FAINT);
+  addText(hdr, updatedLabel(m), Font.systemFont(9), FAINT, &quot;right&quot;);
+  right.addSpacer(6);
+  mediumHourly(right, m);
   right.addSpacer();
-  hourlyRow(right, m, { font: 11, icon: 18 });
-  right.addSpacer();
+  const src = airSourceLabel(m);
+  if (src) { const f = right.addStack(); f.size = new Size(MED.right, 11); addText(f, src, Font.systemFont(8), FAINT); f.addSpacer(); }
 }
 
 function tempBar(stack, d, lo, hi, width) {
@@ -487,6 +552,8 @@ function largeWidget(w, m) {
   air.addSpacer();
   airBlock(air, &quot;초미세먼지&quot;, &quot;PM2.5&quot;, m.pm25);
   air.addSpacer();
+  const src = airSourceLabel(m);
+  if (src) { w.addSpacer(3); addText(w, src, Font.systemFont(9), FAINT); }
   w.addSpacer();
 
   const valid = m.days.filter(d =&gt; isNum(d.min) &amp;&amp; isNum(d.max));
@@ -569,9 +636,9 @@ async function main() {
   let model = null, err = null;
   try {
     const loc = await resolveLocation(cache);
-    const { fc, aq } = await fetchWeather(loc);
+    const { fc, aq, ak } = await fetchWeather(loc);
     const sameLoc = cache &amp;&amp; cache.loc &amp;&amp; Math.abs(cache.loc.lat - loc.lat) &lt; 0.05 &amp;&amp; Math.abs(cache.loc.lon - loc.lon) &lt; 0.05;
-    const raw = { loc, fc, aq: aq || (sameLoc ? cache.aq : null), fetchedAt: Date.now() };
+    const raw = { loc, fc, aq: aq || (sameLoc ? cache.aq : null), ak: ak || (sameLoc ? cache.ak : null), fetchedAt: Date.now() };
     writeJSON(cacheFile, raw);
     model = buildModel(raw, false);
   } catch (e) {
@@ -621,8 +688,8 @@ await a.present();</code></pre>
   <h2>위젯 크기별 내용</h2>
   <table>
     <tr><th>소형</th><td>지역, 현재 기온, 날씨 아이콘, 최고·최저, 초미세먼지</td></tr>
-    <tr><th>중형</th><td>소형 내용 + 체감온도·강수확률 + 앞으로 6시간 예보</td></tr>
-    <tr><th>대형</th><td>중형 내용 + 습도·바람 + 미세먼지/초미세먼지 등급 + 5일 예보</td></tr>
+    <tr><th>중형</th><td>소형 내용 + 체감온도·강수확률 + 앞으로 5시간 예보 + 미세먼지 측정소</td></tr>
+    <tr><th>대형</th><td>습도·바람 + 6시간 예보 + 미세먼지/초미세먼지 등급·측정소 + 5일 예보</td></tr>
   </table>
   <h2 style="margin-top:16px">미세먼지 등급</h2>
   <table>
@@ -630,10 +697,10 @@ await a.present();</code></pre>
     <tr><td>PM10</td><td>0–30</td><td>31–80</td><td>81–150</td><td>151+</td></tr>
     <tr><td>PM2.5</td><td>0–15</td><td>16–35</td><td>36–75</td><td>76+</td></tr>
   </table>
-  <p class="sub">단위 ㎍/㎥. 약 30분마다 새로 고쳐요(iOS가 실제 시간을 정합니다). 인터넷이 없으면 마지막 데이터를 「오프라인」으로 표시해요.</p>
+  <p class="sub">단위 ㎍/㎥. 약 30분마다 새로 고쳐요(iOS가 실제 시간을 정합니다). 인터넷이 없으면 마지막 데이터를 「오프라인」으로 표시해요.<br>미세먼지는 가까운 에어코리아 측정소의 실시간 측정값이에요(25km 이내, 3시간 이내 자료). 측정값이 없으면 Open-Meteo 모델 「예측값」으로 표시해요.</p>
 </section>
 
-<p class="sub" style="text-align:center">데이터: <a href="https://open-meteo.com/">Open-Meteo</a> (CC BY 4.0) · 대기질은 모델 추정치라 에어코리아 측정값과 다를 수 있어요 · <a href="../">하늘 날씨 웹앱</a></p>
+<p class="sub" style="text-align:center">데이터: <a href="https://open-meteo.com/">Open-Meteo</a> (CC BY 4.0) · 미세먼지: <a href="https://www.airkorea.or.kr/">에어코리아</a> (한국환경공단) 실시간 자료 — 미확정 값으로 실제와 다를 수 있어요 · <a href="../">하늘 날씨 웹앱</a></p>
 </main>
 <div id="toast"></div>
 <script>

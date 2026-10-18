@@ -122,14 +122,19 @@ def latlon(a, b):
 
 
 def refresh_stations(stations, force):
+    """Try to (re)build coordinates from the official station API.
+    Runs when forced, or once a day (03시 KST run) while the table is not from the
+    official API or is older than 7 days. Official coords override geocoded ones."""
     meta = stations.get("_meta", {})
+    official = meta.get("official", False)
     age = time.time() - meta.get("fetched", 0)
-    if not force and age < 7 * 86400 and stations.get("list"):
+    due = datetime.now(KST).hour == 3 and (not official or age > 7 * 86400)
+    if not (force or due or not stations.get("list")):
         return stations, False
     try:
         items = paged("MsrstnInfoInqireSvc/getMsrstnList", {})
     except ApiError as e:
-        log("station list (getMsrstnList) unavailable, keeping existing table:", e)
+        log("station list (getMsrstnList) unavailable, keeping existing table:", str(e).replace("\n", " ")[:200])
         return stations, False
     out = {}
     for it in items:
@@ -142,8 +147,11 @@ def refresh_stations(stations, force):
     if len(out) < 300:
         log("station list looks incomplete:", len(out), "- keeping existing")
         return stations, False
-    new = {"_meta": {"source": "에어코리아 MsrstnInfoInqireSvc/getMsrstnList", "fetched": int(time.time())}, "list": out}
-    log("station table refreshed:", sum(len(v) for v in out.values()), "stations")
+    merged = dict(stations.get("list") or {})
+    merged.update(out)
+    new = {"_meta": {"source": "에어코리아 측정소정보 API (MsrstnInfoInqireSvc/getMsrstnList)", "official": True,
+                     "fetched": int(time.time())}, "list": dict(sorted(merged.items()))}
+    log("station table refreshed from official API:", len(out), "names")
     return new, True
 
 
@@ -174,8 +182,7 @@ def main():
         return 1
     log("measurements:", len(rows), "rows")
     stations = load_json(STN, {})
-    unknown = [r.get("stationName") for r in rows if r.get("stationName") and not (stations.get("list") or {}).get(r.get("stationName"))]
-    stations, changed = refresh_stations(stations, force_stn or len(unknown) > 0 and time.time() - stations.get("_meta", {}).get("fetched", 0) > 86400)
+    stations, changed = refresh_stations(stations, force_stn)
     if changed:
         write_json(STN, stations)
 
@@ -186,9 +193,10 @@ def main():
         if not c:
             nocoord.append(name); continue
         out.append([name, sido, c["lat"], c["lon"], num(r.get("pm10Value")), num(r.get("pm25Value")),
-                    (r.get("dataTime") or "").strip(), num(r.get("pm10Grade1h")), num(r.get("pm25Grade1h"))])
+                    (r.get("dataTime") or "").strip(), num(r.get("pm10Grade1h")), num(r.get("pm25Grade1h")),
+                    (r.get("mangName") or c.get("net") or "").strip()])
     if nocoord:
-        log(len(nocoord), "stations without coordinates (skipped):", ", ".join(nocoord[:30]))
+        log("::warning::%d stations without coordinates (skipped): %s" % (len(nocoord), ", ".join(nocoord[:30])))
     if not out:
         log("no usable rows; not writing"); return 1
     out.sort(key=lambda x: (x[1], x[0]))
@@ -198,7 +206,7 @@ def main():
         "note": "실시간 측정 자료는 확정되지 않은 값으로 실제 대기오염도와 차이가 있을 수 있습니다.",
         "dataTime": times[-1] if times else None,
         "tz": "Asia/Seoul",
-        "fields": ["name", "sido", "lat", "lon", "pm10", "pm25", "dataTime", "pm10Grade1h", "pm25Grade1h"],
+        "fields": ["name", "sido", "lat", "lon", "pm10", "pm25", "dataTime", "pm10Grade1h", "pm25Grade1h", "net"],
         "stations": out,
     }
     write_json(OUT, doc)

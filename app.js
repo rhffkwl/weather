@@ -1,5 +1,6 @@
 'use strict';
-/* 하늘 날씨 — static PWA using Open-Meteo (forecast, air quality, geocoding) */
+/* 하늘 날씨 — static PWA using Open-Meteo (forecast, geocoding, model air quality)
+   + AirKorea real-time PM10/PM2.5 measurements (data/airkorea.json, refreshed hourly by GitHub Actions) */
 (() => {
 const $ = (s, r = document) => r.querySelector(s);
 const LS = {
@@ -16,7 +17,7 @@ const POPULAR = [
 ];
 const WMO = {
   0: ['맑음', '☀️', '🌙'], 1: ['대체로 맑음', '🌤️', '🌙'], 2: ['구름 조금', '⛅', '☁️'], 3: ['흐림', '☁️', '☁️'],
-  45: ['안개', '🌫️'], 48: ['짙은 안개', '🌫️'],
+  45: ['안개', 'FOG'], 48: ['짙은 안개', 'FOG'],
   51: ['약한 이슬비', '🌦️', '🌧️'], 53: ['이슬비', '🌦️', '🌧️'], 55: ['강한 이슬비', '🌧️'], 56: ['어는 이슬비', '🌧️'], 57: ['어는 이슬비', '🌧️'],
   61: ['약한 비', '🌦️', '🌧️'], 63: ['비', '🌧️'], 65: ['강한 비', '🌧️'], 66: ['어는 비', '🌧️'], 67: ['강한 어는 비', '🌧️'],
   71: ['약한 눈', '🌨️'], 73: ['눈', '🌨️'], 75: ['강한 눈', '❄️'], 77: ['싸락눈', '🌨️'],
@@ -24,7 +25,9 @@ const WMO = {
   95: ['뇌우', '⛈️'], 96: ['우박 동반 뇌우', '⛈️'], 99: ['강한 우박 뇌우', '⛈️'],
 };
 const wDesc = c => (WMO[c] || ['알 수 없음'])[0];
-const wIcon = (c, day = 1) => { const w = WMO[c]; if (!w) return '🌡️'; return (!day && w[2]) ? w[2] : w[1]; };
+// iOS renders the 🌫️ emoji as a blurry grey square, so fog uses an inline SVG.
+const FOG_SVG = '<svg class="wi" viewBox="0 0 32 32" role="img" aria-label="안개"><path d="M9.5 17.5a5.5 5.5 0 0 1 1.2-10.9A7 7 0 0 1 24 9.2a4.2 4.2 0 0 1-.6 8.3z" fill="#e3e9f1" stroke="#8a97a8" stroke-width="1.2"/><g stroke="#8a97a8" stroke-width="2.4" stroke-linecap="round"><path d="M5 21.5h18"/><path d="M9 25.5h18"/><path d="M6 29.5h14"/></g></svg>';
+const wIcon = (c, day = 1) => { const w = WMO[c]; if (!w) return '☁️'; const i = (!day && w[2]) ? w[2] : w[1]; return i === 'FOG' ? FOG_SVG : i; };
 const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const r0 = n => (n == null || isNaN(n)) ? '--' : Math.round(n);
 const keyOf = (lat, lon) => `${(+lat).toFixed(2)},${(+lon).toFixed(2)}`;
@@ -43,6 +46,30 @@ function uvLevel(u) {
   if (u == null) return '';
   return u < 3 ? '낮음' : u < 6 ? '보통' : u < 8 ? '높음' : u < 11 ? '매우 높음' : '위험';
 }
+
+/* ---- AirKorea 실측 (에어코리아, 한국환경공단) ---- */
+const AK_MAX_KM = 25, AK_STALE_MS = 3 * 3600 * 1000;
+function akTime(s) { const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)/.exec(s || ""); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - 9, +m[5]) : NaN; }
+function akKm(a, b, c, d) { const R = 6371, r = Math.PI / 180, x = Math.sin((c - a) * r / 2), y = Math.sin((d - b) * r / 2); return 2 * R * Math.asin(Math.sqrt(x * x + Math.cos(a * r) * Math.cos(c * r) * y * y)); }
+// → { pm10: {v, name, sido, time, t, km} | null, pm25: ... } (nearest fresh station with a valid value; roadside stations only if nothing else in range)
+function akNearest(doc, lat, lon, now) {
+  if (!doc || !Array.isArray(doc.stations) || !Array.isArray(doc.fields)) return null;
+  now = now || Date.now();
+  const F = {}; doc.fields.forEach((f, i) => F[f] = i);
+  const near = [];
+  for (const r of doc.stations) {
+    const t = akTime(r[F.dataTime]);
+    if (!(now - t <= AK_STALE_MS)) continue;
+    const km = akKm(lat, lon, r[F.lat], r[F.lon]);
+    if (km <= AK_MAX_KM) near.push({ r, km, t, road: r[F.net] === "도로변대기" });
+  }
+  near.sort((a, b) => (a.road - b.road) || (a.km - b.km));
+  const pick = k => { const x = near.find(n => typeof n.r[F[k]] === "number" && isFinite(n.r[F[k]]) && n.r[F[k]] >= 0); return x ? { v: x.r[F[k]], name: x.r[F.name], sido: x.r[F.sido], time: x.r[F.dataTime], t: x.t, km: Math.round(x.km * 10) / 10 } : null; };
+  const out = { pm10: pick("pm10"), pm25: pick("pm25") };
+  return (out.pm10 || out.pm25) ? out : null;
+}
+function akFresh(x, now) { return !!(x && now - x.t <= AK_STALE_MS); }
+function akHour(x) { return x && x.time ? Number(x.time.slice(11, 13)) + "시" : ""; }
 
 /* ---------------- state ---------------- */
 const state = {
@@ -84,9 +111,15 @@ function airURL(lat, lon) {
   const p = new URLSearchParams({ latitude: lat, longitude: lon, timezone: 'auto', current: 'pm10,pm2_5', hourly: 'pm10,pm2_5', forecast_days: 2 });
   return 'https://air-quality-api.open-meteo.com/v1/air-quality?' + p;
 }
+// 5-minute cache-busting bucket: GitHub Pages' CDN caches for ~10 min.
+const akURL = () => 'data/airkorea.json?t=' + Math.floor(Date.now() / 300000);
+async function fetchAirKorea(l) {
+  try { return akNearest(await getJSON(akURL(), 10000), l.lat, l.lon); } catch (e) { console.info('AirKorea data unavailable, using model values', e && e.message); return null; }
+}
 async function fetchWeather(l) {
-  const [f, a] = await Promise.all([getJSON(forecastURL(l.lat, l.lon)), getJSON(airURL(l.lat, l.lon)).catch(() => null)]);
-  const d = { ts: Date.now(), f, a };
+  const prev = cacheGet(l);
+  const [f, a, k] = await Promise.all([getJSON(forecastURL(l.lat, l.lon)), getJSON(airURL(l.lat, l.lon)).catch(() => null), fetchAirKorea(l)]);
+  const d = { ts: Date.now(), f, a, k: k || (prev && prev.k) || null };
   cacheSet(l, d);
   return d;
 }
@@ -163,7 +196,7 @@ function renderWeather(d) {
   const { f, a } = d; const c = f.current; const H = f.hourly; const D = f.daily;
   document.body.classList.toggle('night', !c.is_day);
   document.body.classList.toggle('rain', c.weather_code >= 45 || c.weather_code === 3);
-  $('#curIcon').textContent = wIcon(c.weather_code, c.is_day);
+  $('#curIcon').innerHTML = wIcon(c.weather_code, c.is_day);
   $('#curTemp').textContent = r0(c.temperature_2m) + '°';
   $('#curDesc').textContent = wDesc(c.weather_code);
   $('#curHL').textContent = `최고 ${r0(D.temperature_2m_max[0])}° · 최저 ${r0(D.temperature_2m_min[0])}° · 체감 ${r0(c.apparent_temperature)}°`;
@@ -192,15 +225,27 @@ function renderWeather(d) {
     ['일출 · 일몰', `${hm(D.sunrise[0])}`, `일몰 ${hm(D.sunset[0])}`],
   ].map(([t, v, s]) => `<div class="card"><h2>${t}</h2><div class="v">${v}</div><div class="s">${s}</div></div>`).join('');
 
-  // air quality
-  const ac = a && a.current;
-  if (ac) {
-    // daily max of remaining hours today (forecast)
-    const box = (kind, name) => {
-      const v = ac[kind]; const L = pmLevel(kind, v);
-      return `<div class="aq"><div class="n">${name}</div><div class="lv lv-${L ? L.lv : 0}">${L ? `<span class="dot"></span>${L.label}` : '정보 없음'}</div><div class="val">${v == null ? '-' : Math.round(v)} µg/m³</div></div>`;
+  // air quality: AirKorea measured value first, Open-Meteo model value as fallback (labeled 예측값)
+  const ac = (a && a.current) || {}; const k = d.k || {}; const now = Date.now();
+  const pick = (kind, mk) => {
+    const m = k[kind];
+    if (akFresh(m, now) && m.v != null) return { v: m.v, src: 'ak', st: m };
+    return ac[mk] != null ? { v: ac[mk], src: 'model' } : null;
+  };
+  const p10 = pick('pm10', 'pm10'), p25 = pick('pm25', 'pm2_5');
+  if (p10 || p25) {
+    const box = (kind, name, p) => {
+      const v = p && p.v; const L = pmLevel(kind, v);
+      const tag = !p ? '' : p.src === 'ak' ? '<span class="tag ak">실측</span>' : '<span class="tag">예측값</span>';
+      return `<div class="aq"><div class="n">${name}${tag}</div><div class="lv lv-${L ? L.lv : 0}">${L ? `<span class="pill">${L.label}</span>` : '<span class="pill">정보 없음</span>'}</div><div class="val">${v == null ? '-' : Math.round(v)} µg/m³</div></div>`;
     };
-    $('#air').innerHTML = box('pm10', '미세먼지 PM10') + box('pm2_5', '초미세먼지 PM2.5');
+    const sts = [p10, p25].filter(p => p && p.src === 'ak').map(p => p.st);
+    const names = [...new Set(sts.map(s => `${s.name} · ${akHour(s)} 기준`))];
+    const lines = [];
+    if (names.length) lines.push(`측정소: ${esc(names.join(', '))}${sts[0].km >= 1 ? ` <span class="km">(${esc(sts[0].km)}km)</span>` : ''}`);
+    if ([p10, p25].some(p => p && p.src === 'model')) lines.push(names.length ? '일부 항목은 측정값이 없어 Open-Meteo 모델 예측값이에요' : '근처 측정소의 최신 측정값이 없어 Open-Meteo 모델 예측값을 보여드려요');
+    if (names.length) lines.push('출처: 에어코리아 (한국환경공단) · 실시간 자료는 미확정 값으로 실제와 다를 수 있어요');
+    $('#air').innerHTML = box('pm10', '미세먼지 PM10', p10) + box('pm2_5', '초미세먼지 PM2.5', p25) + `<div class="aqsrc">${lines.join('<br>')}</div>`;
   } else $('#air').innerHTML = '<div class="muted" style="margin:6px 0;grid-column:1/-1">대기질 정보를 불러오지 못했어요</div>';
 
   // 7-day
@@ -211,7 +256,7 @@ function renderWeather(d) {
     const [y, m, dd] = D.time[i].split('-').map(Number); const dow = new Date(y, m - 1, dd).getDay();
     const name = i === 0 ? '오늘' : i === 1 ? '내일' : DOW[dow];
     const mn = D.temperature_2m_min[i], mx = D.temperature_2m_max[i]; const pp = D.precipitation_probability_max[i];
-    dl += `<li><span class="d"${dow === 0 && i > 1 ? ' style="color:#e5484d"' : dow === 6 && i > 1 ? ' style="color:#3b82f6"' : ''}>${name}</span><span class="ic">${wIcon(D.weather_code[i], 1)}</span><span class="pp">${pp >= 10 ? pp + '%' : ''}</span>`
+    dl += `<li><span class="d${dow === 0 && i > 1 ? ' sun' : dow === 6 && i > 1 ? ' sat' : ''}">${name}</span><span class="ic">${wIcon(D.weather_code[i], 1)}</span><span class="pp">${pp >= 10 ? pp + '%' : ''}</span>`
       + `<span class="lo">${r0(mn)}°</span><span class="rng"><i style="left:${(mn - lo) / span * 100}%;right:${(hi - mx) / span * 100}%"></i></span><span class="hi">${r0(mx)}°</span></li>`;
   }
   $('#daily').innerHTML = dl;

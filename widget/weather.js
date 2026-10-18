@@ -4,7 +4,9 @@
 
 /*
  * 하늘 날씨 위젯 (Scriptable)
- * - 데이터: Open-Meteo 예보 / 대기질 / 지오코딩 (API 키 불필요)
+ * - 데이터: Open-Meteo 예보 / 지오코딩 (API 키 불필요)
+ *   미세먼지: 에어코리아(한국환경공단) 실시간 측정값 — 가장 가까운 측정소.
+ *   (3시간 넘게 오래됐거나 값이 없으면 Open-Meteo 예측값으로 대신 표시)
  * - 크기: 소형 · 중형 · 대형 (잠금화면 위젯도 간단히 지원)
  * - 위치: 현재 위치(실패 시 마지막 위치 → 서울).
  *   위젯 길게 누르기 > 위젯 편집 > Parameter 에 도시 이름(예: 부산, 제주, 강릉)을 넣으면 그 도시를 표시합니다.
@@ -14,6 +16,7 @@
 
 const CONFIG = {
   appURL: "https://rhffkwl.github.io/weather/",
+  airKoreaURL: "https://rhffkwl.github.io/weather/data/airkorea.json",
   fallback: { name: "서울", lat: 37.5665, lon: 126.978 },
   refreshMinutes: 30,
   locationTimeout: 8,   // 초
@@ -94,12 +97,36 @@ const ICON_TINT = { sun: "#FFD60A", moon: "#F2F2F7", cloud: "#FFFFFF", rain: "#9
 /* ---------------- 미세먼지 ---------------- */
 const PM_LABELS = ["좋음", "보통", "나쁨", "매우나쁨"];
 const PM_COLORS = ["#2F80ED", "#27AE60", "#F2994A", "#EB5757"];
-function pmLevel(v, kind) {
+function pmLevel(v, kind, src) {
   if (!isNum(v)) return null;
   const t = kind === "pm10" ? [30, 80, 150] : [15, 35, 75];
   const i = v <= t[0] ? 0 : v <= t[1] ? 1 : v <= t[2] ? 2 : 3;
-  return { label: PM_LABELS[i], color: PM_COLORS[i], value: Math.round(v), index: i };
+  return { label: PM_LABELS[i], color: PM_COLORS[i], value: Math.round(v), index: i, src: src || "model" };
 }
+/* AirKorea 실측 (에어코리아, 한국환경공단) */
+const AK_MAX_KM = 25, AK_STALE_MS = 3 * 3600 * 1000;
+function akTime(s) { const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)/.exec(s || ""); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4] - 9, +m[5]) : NaN; }
+function akKm(a, b, c, d) { const R = 6371, r = Math.PI / 180, x = Math.sin((c - a) * r / 2), y = Math.sin((d - b) * r / 2); return 2 * R * Math.asin(Math.sqrt(x * x + Math.cos(a * r) * Math.cos(c * r) * y * y)); }
+// → { pm10: {v, name, sido, time, t, km} | null, pm25: ... } (nearest fresh station with a valid value; roadside stations only if nothing else in range)
+function akNearest(doc, lat, lon, now) {
+  if (!doc || !Array.isArray(doc.stations) || !Array.isArray(doc.fields)) return null;
+  now = now || Date.now();
+  const F = {}; doc.fields.forEach((f, i) => F[f] = i);
+  const near = [];
+  for (const r of doc.stations) {
+    const t = akTime(r[F.dataTime]);
+    if (!(now - t <= AK_STALE_MS)) continue;
+    const km = akKm(lat, lon, r[F.lat], r[F.lon]);
+    if (km <= AK_MAX_KM) near.push({ r, km, t, road: r[F.net] === "도로변대기" });
+  }
+  near.sort((a, b) => (a.road - b.road) || (a.km - b.km));
+  const pick = k => { const x = near.find(n => typeof n.r[F[k]] === "number" && isFinite(n.r[F[k]]) && n.r[F[k]] >= 0); return x ? { v: x.r[F[k]], name: x.r[F.name], sido: x.r[F.sido], time: x.r[F.dataTime], t: x.t, km: Math.round(x.km * 10) / 10 } : null; };
+  const out = { pm10: pick("pm10"), pm25: pick("pm25") };
+  return (out.pm10 || out.pm25) ? out : null;
+}
+function akFresh(x, now) { return !!(x && now - x.t <= AK_STALE_MS); }
+function akHour(x) { return x && x.time ? Number(x.time.slice(11, 13)) + "시" : ""; }
+
 
 /* ---------------- 위치 ---------------- */
 const FC_RANK = { PPLC: 6, PPLA: 5, PPLA2: 4, PPLA3: 3, PPLA4: 2, PPL: 1, ADM1: 1, ADM2: 1 };
@@ -169,9 +196,11 @@ async function fetchWeather(loc) {
     wind_speed_unit: "ms",
   }));
   const aqURL = "https://air-quality-api.open-meteo.com/v1/air-quality?" + qs(Object.assign({}, base, { current: "pm10,pm2_5" }));
-  const [fc, aq] = await Promise.all([getJSON(fcURL), getJSON(aqURL).catch(() => null)]);
+  const akURL = CONFIG.airKoreaURL + "?t=" + Math.floor(Date.now() / 300000);
+  const [fc, aq, ak] = await Promise.all([getJSON(fcURL), getJSON(aqURL).catch(() => null),
+    getJSON(akURL).then(doc => akNearest(doc, loc.lat, loc.lon)).catch(() => null)]);
   if (!fc || !fc.current || !fc.hourly || !fc.daily) throw new Error("예보 데이터가 비어 있어요");
-  return { fc, aq };
+  return { fc, aq, ak };
 }
 
 const DOW = ["일", "월", "화", "수", "목", "금", "토"];
@@ -181,7 +210,7 @@ function dowLabel(dateStr) {
 }
 
 function buildModel(raw, offline) {
-  const { loc, fc, aq, fetchedAt } = raw;
+  const { loc, fc, aq, ak, fetchedAt } = raw;
   const c = fc.current, h = fc.hourly, d = fc.daily;
   const nowISO = seoulISO(Date.now());
   const nowHour = nowISO.slice(0, 13);
@@ -216,11 +245,21 @@ function buildModel(raw, offline) {
     popNow: h.precipitation_probability ? h.precipitation_probability[Math.max(idx, 0)] : null,
     popDay: days[0] ? days[0].pop : null,
     hours, days,
-    pm10: pmLevel(aqc.pm10, "pm10"), pm25: pmLevel(aqc.pm2_5, "pm25"),
+    pm10: pmPick(ak && ak.pm10, aqc.pm10, "pm10"), pm25: pmPick(ak && ak.pm25, aqc.pm2_5, "pm25"),
     fetchedAt, offline,
   };
 }
 
+// 실측(에어코리아) 우선, 오래됐거나(>3h) 없으면 Open-Meteo 예측값
+function pmPick(a, model, kind) {
+  if (akFresh(a, Date.now()) && isNum(a.v)) return Object.assign(pmLevel(a.v, kind, "ak"), { station: a.name, hour: akHour(a) });
+  return pmLevel(model, kind, "model");
+}
+function airSourceLabel(m) {
+  const a = (m.pm25 && m.pm25.src === "ak") ? m.pm25 : (m.pm10 && m.pm10.src === "ak") ? m.pm10 : null;
+  if (a) return `측정소 ${a.station} · ${a.hour} 기준 · 에어코리아`;
+  return (m.pm10 || m.pm25) ? "예측값 · Open-Meteo 대기질 모델" : "";
+}
 function updatedLabel(m) {
   const p = seoulParts(m.fetchedAt), n = seoulParts(Date.now());
   const same = p.y === n.y && p.mo === n.mo && p.d === n.d;
@@ -314,50 +353,76 @@ function hourlyRow(stack, m, opts) {
 }
 
 /* ---------------- 레이아웃 ---------------- */
+// 소형/중형은 가장 작은 아이폰(소형 141pt, 중형 292x141pt) 기준으로 고정 폭을 써서 잘림을 막습니다.
+function fixedBox(stack, w, h) { const b = stack.addStack(); b.size = new Size(w, h); b.centerAlignContent(); return b; }
+function centerText(stack, w, h, str, font, color) { const b = fixedBox(stack, w, h); b.addSpacer(); const t = addText(b, str, font, color, "center"); b.addSpacer(); return t; }
+
 function smallWidget(w, m) {
-  w.setPadding(14, 14, 12, 14);
+  w.setPadding(12, 12, 12, 12);
   const top = w.addStack(); top.centerAlignContent();
-  placeRow(top, m, 13);
+  placeRow(top, m, 12);
   top.addSpacer();
   w.addSpacer(2);
   const row = w.addStack(); row.centerAlignContent();
-  addText(row, tempStr(m.temp), Font.boldSystemFont(38), WHITE);
+  addText(row, tempStr(m.temp), Font.boldSystemFont(34), WHITE);
   row.addSpacer();
-  weatherIcon(row, m.code, m.isDay, 30);
+  weatherIcon(row, m.code, m.isDay, 26);
   addText(w, m.info.text, Font.mediumSystemFont(12), WHITE);
-  addText(w, `최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(11), SUB);
+  addText(w, `최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(10), SUB);
   w.addSpacer();
   const bot = w.addStack(); bot.centerAlignContent();
-  pm25Pill(bot, m, 10);
+  pm25Pill(bot, m, 9);
+  bot.addSpacer(4);
   bot.addSpacer();
-  addText(bot, updatedLabel(m).replace(" 업데이트", ""), Font.systemFont(9), FAINT);
+  addText(bot, updatedLabel(m).replace(" 업데이트", ""), Font.systemFont(8), FAINT);
 }
 
+const MED = { left: 96, gap: 8, right: 160, cols: 5 };
+function mediumHourly(stack, m) {
+  const cw = Math.floor(MED.right / MED.cols);
+  const row = stack.addStack(); row.layoutHorizontally(); row.size = new Size(MED.right, 0);
+  const list = m.hours.slice(0, MED.cols);
+  if (!list.length) { addText(row, "시간별 예보 없음", Font.systemFont(10), SUB); return row; }
+  list.forEach(h => {
+    const col = row.addStack(); col.layoutVertically(); col.size = new Size(cw, 0);
+    centerText(col, cw, 13, h.label, Font.mediumSystemFont(10), SUB);
+    col.addSpacer(2);
+    const ic = fixedBox(col, cw, 18); ic.addSpacer(); weatherIcon(ic, h.code, h.isDay, 17); ic.addSpacer();
+    col.addSpacer(2);
+    centerText(col, cw, 15, tempStr(h.temp), Font.semiboldSystemFont(12), WHITE);
+    centerText(col, cw, 10, isNum(h.pop) && h.pop > 0 ? pctStr(h.pop) : " ", Font.mediumSystemFont(8), RAIN);
+  });
+  return row;
+}
 function mediumWidget(w, m) {
-  w.setPadding(14, 16, 12, 14);
+  w.setPadding(12, 14, 12, 12);
   const main = w.addStack(); main.layoutHorizontally();
-  const left = main.addStack(); left.layoutVertically(); left.size = new Size(118, 0);
-  placeRow(left, m, 13);
-  const tr = left.addStack(); tr.centerAlignContent();
-  addText(tr, tempStr(m.temp), Font.boldSystemFont(34), WHITE);
-  tr.addSpacer(6);
-  weatherIcon(tr, m.code, m.isDay, 24);
+  const left = main.addStack(); left.layoutVertically(); left.size = new Size(MED.left, 0);
+  placeRow(left, m, 12);
+  left.addSpacer(1);
+  const tr = left.addStack(); tr.centerAlignContent(); tr.size = new Size(MED.left, 34);
+  addText(tr, tempStr(m.temp), Font.boldSystemFont(28), WHITE);
+  tr.addSpacer(4);
+  weatherIcon(tr, m.code, m.isDay, 20);
   tr.addSpacer();
-  addText(left, m.info.text, Font.mediumSystemFont(12), WHITE);
+  addText(left, m.info.text, Font.mediumSystemFont(11), WHITE);
   addText(left, `최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(10), SUB);
   addText(left, `체감 ${tempStr(m.feels)} · 강수 ${pctStr(isNum(m.popNow) ? m.popNow : m.popDay)}`, Font.systemFont(10), SUB);
   left.addSpacer();
-  pm25Pill(left, m, 10);
+  const pr = left.addStack(); pr.size = new Size(MED.left, 16); pr.centerAlignContent();
+  pm25Pill(pr, m, 9); pr.addSpacer();
 
-  main.addSpacer(10);
-  const right = main.addStack(); right.layoutVertically();
-  const hdr = right.addStack(); hdr.centerAlignContent();
-  addText(hdr, "시간별", Font.semiboldSystemFont(10), SUB);
+  main.addSpacer(MED.gap);
+  const right = main.addStack(); right.layoutVertically(); right.size = new Size(MED.right, 0);
+  const hdr = right.addStack(); hdr.centerAlignContent(); hdr.size = new Size(MED.right, 13);
+  addText(hdr, "시간별 예보", Font.semiboldSystemFont(10), SUB);
   hdr.addSpacer();
-  addText(hdr, updatedLabel(m), Font.systemFont(9), FAINT);
+  addText(hdr, updatedLabel(m), Font.systemFont(9), FAINT, "right");
+  right.addSpacer(6);
+  mediumHourly(right, m);
   right.addSpacer();
-  hourlyRow(right, m, { font: 11, icon: 18 });
-  right.addSpacer();
+  const src = airSourceLabel(m);
+  if (src) { const f = right.addStack(); f.size = new Size(MED.right, 11); addText(f, src, Font.systemFont(8), FAINT); f.addSpacer(); }
 }
 
 function tempBar(stack, d, lo, hi, width) {
@@ -426,6 +491,8 @@ function largeWidget(w, m) {
   air.addSpacer();
   airBlock(air, "초미세먼지", "PM2.5", m.pm25);
   air.addSpacer();
+  const src = airSourceLabel(m);
+  if (src) { w.addSpacer(3); addText(w, src, Font.systemFont(9), FAINT); }
   w.addSpacer();
 
   const valid = m.days.filter(d => isNum(d.min) && isNum(d.max));
@@ -508,9 +575,9 @@ async function main() {
   let model = null, err = null;
   try {
     const loc = await resolveLocation(cache);
-    const { fc, aq } = await fetchWeather(loc);
+    const { fc, aq, ak } = await fetchWeather(loc);
     const sameLoc = cache && cache.loc && Math.abs(cache.loc.lat - loc.lat) < 0.05 && Math.abs(cache.loc.lon - loc.lon) < 0.05;
-    const raw = { loc, fc, aq: aq || (sameLoc ? cache.aq : null), fetchedAt: Date.now() };
+    const raw = { loc, fc, aq: aq || (sameLoc ? cache.aq : null), ak: ak || (sameLoc ? cache.ak : null), fetchedAt: Date.now() };
     writeJSON(cacheFile, raw);
     model = buildModel(raw, false);
   } catch (e) {
