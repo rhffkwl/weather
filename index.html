@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>하늘 날씨</title>
+<meta name="description" content="현재 위치 날씨, 시간별·주간 예보, 미세먼지">
+<meta name="theme-color" content="#4a8fe7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1220" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="하늘 날씨">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <nav id="tabs" class="tabs" aria-label="위치 목록"></nav>
+    <button id="btnSearch" class="iconbtn" aria-label="도시 검색">
+      <svg viewBox="0 0 24 24" width="20" height="20"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M20 20l-4-4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    </button>
+    <button id="btnFavs" class="iconbtn" aria-label="즐겨찾기 관리">
+      <svg viewBox="0 0 24 24" width="20" height="20"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+    </button>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="loc-row">
+        <h1 id="locName">불러오는 중…</h1>
+        <button id="btnStar" class="star" aria-label="즐겨찾기에 추가" aria-pressed="false">☆</button>
+      </div>
+      <div id="locSub" class="loc-sub"></div>
+      <div class="hero-main">
+        <div id="curIcon" class="cur-icon">⛅</div>
+        <div id="curTemp" class="cur-temp">--°</div>
+      </div>
+      <div id="curDesc" class="cur-desc">&nbsp;</div>
+      <div id="curHL" class="cur-hl">&nbsp;</div>
+      <div id="status" class="status" hidden></div>
+    </section>
+
+    <section class="card">
+      <h2>시간별 예보</h2>
+      <div id="hourly" class="hourly" data-noswipe></div>
+    </section>
+
+    <section class="grid" id="details"></section>
+
+    <section class="card">
+      <h2>미세먼지</h2>
+      <div id="air" class="air"></div>
+    </section>
+
+    <section class="card">
+      <h2>7일 예보</h2>
+      <ul id="daily" class="daily"></ul>
+    </section>
+
+    <footer class="foot">
+      <div id="updated"></div>
+      <div>데이터: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> (CC BY 4.0) · 위치명: BigDataCloud</div>
+      <button id="btnRefresh" class="linkbtn">새로고침</button>
+    </footer>
+  </main>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<!-- Search sheet -->
+<div id="searchSheet" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close></div>
+  <div class="sheet-panel" role="dialog" aria-label="도시 검색">
+    <div class="sheet-head">
+      <form id="searchForm" class="searchbox" autocomplete="off">
+        <input id="searchInput" type="search" placeholder="도시 이름 (예: 부산, 제주, 도쿄)" enterkeyhint="search" aria-label="도시 이름">
+      </form>
+      <button class="linkbtn" data-close>닫기</button>
+    </div>
+    <div class="sheet-body">
+      <button id="btnUseHere" class="row-btn">📍 현재 위치 사용</button>
+      <div id="searchResults" class="results"></div>
+      <div id="popular" class="popular"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Favorites sheet -->
+<div id="favSheet" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close></div>
+  <div class="sheet-panel" role="dialog" aria-label="즐겨찾기 위치">
+    <div class="sheet-head">
+      <h2 class="sheet-title">즐겨찾기 위치</h2>
+      <button id="btnEdit" class="linkbtn">편집</button>
+      <button class="linkbtn" data-close>닫기</button>
+    </div>
+    <div class="sheet-body">
+      <ul id="favList" class="favlist"></ul>
+      <p id="favEmpty" class="muted" hidden>아직 즐겨찾기한 위치가 없어요.<br>도시를 검색하거나 현재 위치에서 ☆를 눌러 추가하세요.</p>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
