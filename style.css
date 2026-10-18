@@ -60,6 +60,8 @@ main.slide-l{transform:translateX(-24px);opacity:.3} main.slide-r{transform:tran
 .cur-temp{font-size:88px;font-weight:200;letter-spacing:-.04em;line-height:1}
 .cur-desc{font-size:19px;font-weight:600;margin-top:2px}
 .cur-hl{font-size:15px;color:var(--fg2);margin-top:4px}
+.yday{display:inline-block;margin-top:8px;font-size:13px;font-weight:700;padding:4px 10px;border-radius:999px;color:#fff;background:#5f6b7a}
+.yday.up{background:#c2410c}.yday.down{background:#1d4ed8}
 .status{margin:10px auto 0;display:inline-block;font-size:12px;padding:5px 10px;border-radius:999px;background:var(--chip)}
 .card{background:var(--card);border:1px solid var(--card-b);border-radius:20px;padding:14px 14px;margin:0 0 12px;box-shadow:var(--shadow);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
 .card h2{font-size:12.5px;font-weight:700;color:var(--fg2);margin:0 0 10px;letter-spacing:.02em}
@@ -96,7 +98,8 @@ main.slide-l{transform:translateX(-24px);opacity:.3} main.slide-r{transform:tran
 .daily .lo{color:var(--fg2);text-align:right}
 .daily .hi{font-weight:700;text-align:right}
 .rng{height:5px;border-radius:3px;background:var(--line);position:relative}
-.rng i{position:absolute;top:0;bottom:0;border-radius:3px;background:linear-gradient(90deg,#5ab0ff,#ffd04d,#ff8a3d)}
+/* gradient spans the whole 7-day range (colour = temperature); each day shows only its min–max slice */
+.rng i{position:absolute;inset:0;border-radius:3px;background:linear-gradient(90deg,#5ab0ff,#ffd04d,#ff8a3d)}
 .foot{text-align:center;font-size:12px;color:var(--fg2);padding:8px 0 4px;line-height:1.7}
 .linkbtn{border:0;background:none;color:var(--accent);font-weight:600;cursor:pointer;padding:6px 8px;font-size:15px}
 .foot .linkbtn{font-size:13px}

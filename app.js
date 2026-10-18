@@ -100,7 +100,7 @@ async function getJSON(url, ms = 12000) {
 }
 function forecastURL(lat, lon) {
   const p = new URLSearchParams({
-    latitude: lat, longitude: lon, timezone: 'auto', forecast_days: 8, wind_speed_unit: 'ms',
+    latitude: lat, longitude: lon, timezone: 'auto', forecast_days: 8, past_days: 1, wind_speed_unit: 'ms',
     current: 'temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,uv_index,dew_point_2m',
     hourly: 'temperature_2m,precipitation_probability,weather_code,is_day',
     daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,uv_index_max,sunrise,sunset',
@@ -116,9 +116,26 @@ const akURL = () => 'data/airkorea.json?t=' + Math.floor(Date.now() / 300000);
 async function fetchAirKorea(l) {
   try { return akNearest(await getJSON(akURL(), 10000), l.lat, l.lon); } catch (e) { console.info('AirKorea data unavailable, using model values', e && e.message); return null; }
 }
+// past_days=1: take yesterday's same-hour temperature, then drop yesterday from the daily arrays.
+function normalizeForecast(f) {
+  if (!f || !f.current || !f.hourly || !f.daily) return f;
+  const H = f.hourly, D = f.daily, hr = f.current.time.slice(0, 13);
+  const i = H.time.findIndex(t => t.slice(0, 13) === hr);
+  f.yday = i >= 24 && H.temperature_2m[i - 24] != null ? H.temperature_2m[i - 24] : null;
+  const today = f.current.time.slice(0, 10);
+  while (D.time.length && D.time[0] < today) for (const key of Object.keys(D)) if (Array.isArray(D[key])) D[key].shift();
+  return f;
+}
+function ydayInfo(now, prev) {
+  if (now == null || prev == null || isNaN(now) || isNaN(prev)) return null;
+  const diff = now - prev, n = Math.round(Math.abs(diff));
+  if (Math.abs(diff) < 1 || n === 0) return { cls: 'same', html: '어제와 비슷' };
+  return diff > 0 ? { cls: 'up', html: `<span aria-hidden="true">▲</span> 어제보다 ${n}° 높음` } : { cls: 'down', html: `<span aria-hidden="true">▼</span> 어제보다 ${n}° 낮음` };
+}
 async function fetchWeather(l) {
   const prev = cacheGet(l);
-  const [f, a, k] = await Promise.all([getJSON(forecastURL(l.lat, l.lon)), getJSON(airURL(l.lat, l.lon)).catch(() => null), fetchAirKorea(l)]);
+  const [f0, a, k] = await Promise.all([getJSON(forecastURL(l.lat, l.lon)), getJSON(airURL(l.lat, l.lon)).catch(() => null), fetchAirKorea(l)]);
+  const f = normalizeForecast(f0);
   const d = { ts: Date.now(), f, a, k: k || (prev && prev.k) || null };
   cacheSet(l, d);
   return d;
@@ -200,6 +217,8 @@ function renderWeather(d) {
   $('#curTemp').textContent = r0(c.temperature_2m) + '°';
   $('#curDesc').textContent = wDesc(c.weather_code);
   $('#curHL').textContent = `최고 ${r0(D.temperature_2m_max[0])}° · 최저 ${r0(D.temperature_2m_min[0])}° · 체감 ${r0(c.apparent_temperature)}°`;
+  const yd = ydayInfo(c.temperature_2m, f.yday); const ye = $('#curYday');
+  ye.hidden = !yd; ye.className = 'yday' + (yd ? ' ' + yd.cls : ''); ye.innerHTML = yd ? yd.html : '';
 
   // hourly (next 24h starting at current hour)
   let i0 = H.time.findIndex(t => t.slice(0, 13) === c.time.slice(0, 13)); if (i0 < 0) i0 = 0;
@@ -257,14 +276,14 @@ function renderWeather(d) {
     const name = i === 0 ? '오늘' : i === 1 ? '내일' : DOW[dow];
     const mn = D.temperature_2m_min[i], mx = D.temperature_2m_max[i]; const pp = D.precipitation_probability_max[i];
     dl += `<li><span class="d${dow === 0 && i > 1 ? ' sun' : dow === 6 && i > 1 ? ' sat' : ''}">${name}</span><span class="ic">${wIcon(D.weather_code[i], 1)}</span><span class="pp">${pp >= 10 ? pp + '%' : ''}</span>`
-      + `<span class="lo">${r0(mn)}°</span><span class="rng"><i style="left:${(mn - lo) / span * 100}%;right:${(hi - mx) / span * 100}%"></i></span><span class="hi">${r0(mx)}°</span></li>`;
+      + `<span class="lo">${r0(mn)}°</span><span class="rng"><i style="clip-path:inset(0 ${((hi - mx) / span * 100).toFixed(1)}% 0 ${((mn - lo) / span * 100).toFixed(1)}% round 3px)"></i></span><span class="hi">${r0(mx)}°</span></li>`;
   }
   $('#daily').innerHTML = dl;
   $('#updated').textContent = `${fmtTime(d.ts)} 업데이트`;
 }
 function renderEmpty() {
   ['#hourly', '#details', '#air', '#daily'].forEach(s => $(s).innerHTML = '');
-  $('#curTemp').textContent = '--°'; $('#curDesc').innerHTML = '&nbsp;'; $('#curHL').innerHTML = '&nbsp;'; $('#curIcon').textContent = '⏳';
+  $('#curTemp').textContent = '--°'; $('#curDesc').innerHTML = '&nbsp;'; $('#curHL').innerHTML = '&nbsp;'; $('#curYday').hidden = true; $('#curIcon').textContent = '⏳';
 }
 
 /* ---------------- flow ---------------- */

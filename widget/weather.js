@@ -4,7 +4,7 @@
 
 /*
  * 하늘 날씨 위젯 (Scriptable)
- * - 데이터: Open-Meteo 예보 / 지오코딩 (API 키 불필요)
+ * - 데이터: Open-Meteo 예보(어제 같은 시각 기온 비교 포함) / 지오코딩 (API 키 불필요)
  *   미세먼지: 에어코리아(한국환경공단) 실시간 측정값 — 가장 가까운 측정소.
  *   (3시간 넘게 오래됐거나 값이 없으면 Open-Meteo 예측값으로 대신 표시)
  * - 크기: 소형 · 중형 · 대형 (잠금화면 위젯도 간단히 지원)
@@ -189,11 +189,11 @@ async function resolveLocation(cache) {
 async function fetchWeather(loc) {
   const base = { latitude: loc.lat.toFixed(4), longitude: loc.lon.toFixed(4), timezone: TZ };
   const fcURL = "https://api.open-meteo.com/v1/forecast?" + qs(Object.assign({}, base, {
-    current: "temperature_2m,apparent_temperature,relative_humidity_2m,is_day,weather_code,precipitation,wind_speed_10m",
+    current: "temperature_2m,apparent_temperature,is_day,weather_code,precipitation",
     hourly: "temperature_2m,weather_code,precipitation_probability,is_day",
     daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
     forecast_days: 6,
-    wind_speed_unit: "ms",
+    past_days: 1, // 어제 같은 시각 기온 비교용
   }));
   const aqURL = "https://air-quality-api.open-meteo.com/v1/air-quality?" + qs(Object.assign({}, base, { current: "pm10,pm2_5" }));
   const akURL = CONFIG.airKoreaURL + "?t=" + Math.floor(Date.now() / 300000);
@@ -237,9 +237,11 @@ function buildModel(raw, offline) {
   }
   const aqc = aq && aq.current ? aq.current : {};
   const isDay = c.is_day === 1;
+  const yi = h.time.findIndex(t => t.slice(0, 13) === seoulISO(Date.now() - 86400000).slice(0, 13));
+  const yday = yi >= 0 ? yesterdayCompare(c.temperature_2m, h.temperature_2m[yi]) : null;
   return {
     place: loc.name, source: loc.source,
-    temp: c.temperature_2m, feels: c.apparent_temperature, humidity: c.relative_humidity_2m, wind: c.wind_speed_10m,
+    temp: c.temperature_2m, feels: c.apparent_temperature, yday,
     code: c.weather_code, isDay, info: weatherInfo(c.weather_code, isDay),
     max: days[0] ? days[0].max : null, min: days[0] ? days[0].min : null,
     popNow: h.precipitation_probability ? h.precipitation_probability[Math.max(idx, 0)] : null,
@@ -248,6 +250,19 @@ function buildModel(raw, offline) {
     pm10: pmPick(ak && ak.pm10, aqc.pm10, "pm10"), pm25: pmPick(ak && ak.pm25, aqc.pm2_5, "pm25"),
     fetchedAt, offline,
   };
+}
+
+// 어제 같은 시각과 비교: |차이| < 1° → 비슷. 색은 흰 글씨 대비 4.5:1 이상인 배지 색.
+function yesterdayCompare(now, prev) {
+  if (!isNum(now) || !isNum(prev)) return null;
+  const diff = now - prev, n = Math.round(Math.abs(diff));
+  if (Math.abs(diff) < 1 || n === 0) return { dir: 0, text: "어제와 비슷", color: "#5F6B7A" };
+  return diff > 0 ? { dir: 1, text: `어제보다 ${n}° 높음`, color: "#C2410C" } : { dir: -1, text: `어제보다 ${n}° 낮음`, color: "#1D4ED8" };
+}
+function ydayPill(stack, m, size) {
+  if (!m.yday) return null;
+  const y = m.yday;
+  return pill(stack, y.dir ? `${y.dir > 0 ? "▲" : "▼"} ${y.text}` : y.text, y.color, size);
 }
 
 // 실측(에어코리아) 우선, 오래됐거나(>3h) 없으면 Open-Meteo 예측값
@@ -369,6 +384,7 @@ function smallWidget(w, m) {
   weatherIcon(row, m.code, m.isDay, 26);
   addText(w, m.info.text, Font.mediumSystemFont(12), WHITE);
   addText(w, `최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(10), SUB);
+  if (m.yday) { w.addSpacer(4); const y = w.addStack(); ydayPill(y, m, 9); y.addSpacer(); }
   w.addSpacer();
   const bot = w.addStack(); bot.centerAlignContent();
   pm25Pill(bot, m, 9);
@@ -421,25 +437,47 @@ function mediumWidget(w, m) {
   right.addSpacer(6);
   mediumHourly(right, m);
   right.addSpacer();
+  if (m.yday) { const y = right.addStack(); y.size = new Size(MED.right, 15); y.centerAlignContent(); ydayPill(y, m, 9); y.addSpacer(); right.addSpacer(2); }
   const src = airSourceLabel(m);
   if (src) { const f = right.addStack(); f.size = new Size(MED.right, 11); addText(f, src, Font.systemFont(8), FAINT); f.addSpacer(); }
 }
 
+// 웹앱과 같은 색: 전체 기간 최저(#5AB0FF) → 중간(#FFD04D) → 최고(#FF8A3D). 막대 색은 온도 위치에 따라 정해집니다.
+const BAR_STOPS = [[0, [0x5A, 0xB0, 0xFF]], [0.5, [0xFF, 0xD0, 0x4D]], [1, [0xFF, 0x8A, 0x3D]]];
+function barColorAt(t) {
+  t = Math.max(0, Math.min(1, t));
+  for (let i = 1; i < BAR_STOPS.length; i++) {
+    const [t1, c1] = BAR_STOPS[i], [t0, c0] = BAR_STOPS[i - 1];
+    if (t <= t1) { const k = (t - t0) / (t1 - t0); return "#" + c0.map((v, j) => Math.round(v + (c1[j] - v) * k).toString(16).padStart(2, "0")).join(""); }
+  }
+  return "#FF8A3D";
+}
+function tempBarImage(d, lo, hi, width, height) {
+  const S = 3, W = width * S, H = height * S, r = H / 2;
+  const ctx = new DrawContext();
+  ctx.size = new Size(W, H); ctx.opaque = false; ctx.respectScreenScale = false;
+  const track = new Path(); track.addRoundedRect(new Rect(0, 0, W, H), r, r);
+  ctx.addPath(track); ctx.setFillColor(new Color("#FFFFFF", 0.22)); ctx.fillPath();
+  if (isNum(d.min) && isNum(d.max) && hi > lo) {
+    let x0 = (d.min - lo) / (hi - lo) * W, x1 = (d.max - lo) / (hi - lo) * W;
+    if (x1 - x0 < H) { const mid = (x0 + x1) / 2; x0 = Math.max(0, mid - H / 2); x1 = Math.min(W, x0 + H); x0 = x1 - H; }
+    // 1px 세로 띠로 그라데이션을 그리고, 양 끝은 반원 모양으로 높이를 줄여 둥글게 만듭니다.
+    for (let x = Math.floor(x0); x < Math.ceil(x1); x++) {
+      const cx = x + 0.5;
+      const edge = Math.min(cx - x0, x1 - cx);
+      let hh = H;
+      if (edge < r) { const dx = r - Math.max(0, edge); hh = 2 * Math.sqrt(Math.max(0, r * r - dx * dx)); }
+      if (hh <= 0.2) continue;
+      ctx.setFillColor(new Color(barColorAt(cx / W), 1));
+      ctx.fillRect(new Rect(x, (H - hh) / 2, 1, hh));
+    }
+  }
+  return ctx.getImage();
+}
 function tempBar(stack, d, lo, hi, width) {
-  const bar = stack.addStack();
-  bar.size = new Size(width, 5);
-  bar.cornerRadius = 2.5;
-  bar.backgroundColor = new Color("#FFFFFF", 0.22);
-  bar.layoutHorizontally();
-  if (!isNum(d.min) || !isNum(d.max) || !(hi > lo)) return;
-  const x = Math.max(0, Math.round((d.min - lo) / (hi - lo) * width));
-  const bw = Math.max(6, Math.round((d.max - d.min) / (hi - lo) * width));
-  if (x > 0) bar.addSpacer(Math.min(x, width - bw));
-  const fill = bar.addStack();
-  fill.size = new Size(bw, 5);
-  fill.cornerRadius = 2.5;
-  fill.backgroundColor = new Color("#FFD60A", 0.95);
-  bar.addSpacer();
+  const img = stack.addImage(tempBarImage(d, lo, hi, width, 5));
+  img.imageSize = new Size(width, 5);
+  return img;
 }
 
 function airBlock(stack, title, sub, lvl) {
@@ -478,9 +516,9 @@ function largeWidget(w, m) {
     [m.info.text, Font.semiboldSystemFont(14), WHITE],
     [`최고 ${tempStr(m.max)} · 최저 ${tempStr(m.min)}`, Font.systemFont(11), SUB],
     [`체감 ${tempStr(m.feels)} · 강수 ${pctStr(isNum(m.popNow) ? m.popNow : m.popDay)}`, Font.systemFont(11), SUB],
-    [`습도 ${pctStr(m.humidity)} · 바람 ${isNum(m.wind) ? m.wind.toFixed(1) : "-"}m/s`, Font.systemFont(11), SUB],
   ];
   lines.forEach(([s, f, c]) => { const r = info.addStack(); r.addSpacer(); addText(r, s, f, c, "right"); });
+  if (m.yday) { info.addSpacer(2); const r = info.addStack(); r.addSpacer(); ydayPill(r, m, 10); }
 
   w.addSpacer();
   hourlyRow(w, m, { font: 11, icon: 18 });
