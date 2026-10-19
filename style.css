@@ -28,7 +28,7 @@ body.rain{--bg1:#2c3a50;--bg2:#3a4a62}
 html,body{margin:0;min-height:100%}
 body{
   font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard","Noto Sans KR","Malgun Gothic",system-ui,sans-serif;
-  color:var(--fg); background:linear-gradient(180deg,var(--bg1),var(--bg2)) fixed; background-color:var(--bg1);
+  color:var(--fg); background:var(--bg1);
   min-height:100vh; min-height:100dvh; -webkit-font-smoothing:antialiased; overscroll-behavior-y:none;
   -webkit-text-size-adjust:100%; word-break:keep-all;
 }
@@ -38,9 +38,14 @@ a{color:inherit;text-decoration:underline;text-underline-offset:2px}
 .topbar{
   position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:6px;
   padding:calc(var(--sat) + 8px) calc(var(--sar) + 12px) 8px calc(var(--sal) + 12px);
-  backdrop-filter:saturate(1.6) blur(18px);-webkit-backdrop-filter:saturate(1.6) blur(18px);
-  background:linear-gradient(180deg,color-mix(in srgb,var(--bg1) 70%,transparent),color-mix(in srgb,var(--bg1) 30%,transparent));
+  background:transparent;
 }
+/* 맨 위에서는 머리글 배경 없음(하늘이 상태 막대까지 이어짐). 스크롤하면 아래로 부드럽게 사라지는 흐림만 살짝 */
+.topbar::before{content:"";position:absolute;inset:0 0 -18px 0;z-index:-1;pointer-events:none;opacity:0;transition:opacity .25s ease;
+  background:linear-gradient(180deg,color-mix(in srgb,var(--bg1) 62%,transparent),color-mix(in srgb,var(--bg1) 0%,transparent));
+  backdrop-filter:blur(14px) saturate(1.4);-webkit-backdrop-filter:blur(14px) saturate(1.4);
+  -webkit-mask-image:linear-gradient(#000 0,#000 62%,transparent 100%);mask-image:linear-gradient(#000 0,#000 62%,transparent 100%)}
+.topbar.scrolled::before{opacity:1}
 .tabs{flex:1;display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;scroll-snap-type:x proximity;padding:2px}
 .tabs::-webkit-scrollbar{display:none}
 .tab{flex:none;scroll-snap-align:center;border:0;border-radius:999px;padding:7px 12px;background:var(--chip);font-size:14px;font-weight:600;white-space:nowrap;cursor:pointer;display:flex;gap:5px;align-items:center}
@@ -151,7 +156,10 @@ body.night .sheet-panel,body.rain .sheet-panel{--fg:#eef4ff}
 
 /* ---------- 날씨 배경 (body[data-sky], app.js skyOf) ----------
    그라데이션 + 가벼운 CSS 무늬(이미지·필터 없음): 별, 부드러운 구름, 빗줄기, 눈송이, 안개 띠 */
-body[data-sky]{background:linear-gradient(180deg,var(--bg1),var(--bg2)) fixed;background-color:var(--bg1)}
+/* 하늘 그라데이션은 화면에 고정된 한 장(#sky)으로: iOS는 background-attachment:fixed를 지원하지 않아
+   예전엔 그라데이션만 스크롤되고 별·구름은 고정돼 띠가 생겼음. 상태 막대 아래까지(viewport-fit=cover) 덮음 */
+#sky{position:fixed;left:0;right:0;top:calc(-1 * var(--sat) - 60px);bottom:-60px;z-index:-2;pointer-events:none;
+  background:linear-gradient(180deg,var(--bg1) 0,var(--bg1) calc(var(--sat) + 60px),var(--bg2) 100%)}
 body[data-sky]::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background-repeat:no-repeat}
 body[data-sky="clear-day"]{--bg1:#4f9bef;--bg2:#a8d1ff}
 body[data-sky="cloudy-day"]{--bg1:#6f97c4;--bg2:#b9cde2}

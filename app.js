@@ -464,6 +464,14 @@ const fmtTime = ts => new Date(ts).toLocaleTimeString('ko-KR', { hour: 'numeric'
 // 시간별 줄은 항상 '지금'부터 보이게: 다시 그릴 때와 앱이 다시 보일 때(10분 안이라 새로 받지 않아도) 맨 앞으로.
 // iOS는 관성 스크롤 중에 scrollLeft를 바꾸면 무시할 때가 있어 다음 프레임에 한 번 더.
 function resetHourly() { const el = $('#hourly'); if (!el) return; el.scrollLeft = 0; requestAnimationFrame(() => { el.scrollLeft = 0; }); }
+// Safari 상태 막대/주소창 색 = 지금 하늘 맨 위 색 (예전엔 고정 색이라 맨 위에 다른 색 띠가 보였음)
+function syncThemeColor() {
+  requestAnimationFrame(() => {
+    const c = getComputedStyle(document.body).getPropertyValue('--bg1').trim(); if (!c) return;
+    document.querySelectorAll('meta[name="theme-color"]').forEach(m => m.setAttribute('content', c));
+    document.documentElement.style.backgroundColor = c; // 당겨서 늘어나는(오버스크롤) 부분도 같은 색
+  });
+}
 function skyOf(code, day) {
   const c = +code, d = day ? 'day' : 'night';
   if (c >= 95) return 'storm';
@@ -478,7 +486,7 @@ function renderWeather(d) {
   if (!d || !d.f || !d.f.current || !d.f.hourly) return;
   const { f, a } = d; const c = f.current; const H = f.hourly; const D = f.daily;
   // 날씨 배경: 상태·낮밤별 장면(style.css body[data-sky]). 글자색은 밝은 하늘이면 진하게, 어두운 하늘이면 흰색.
-  const sky = skyOf(c.weather_code, c.is_day); document.body.dataset.sky = sky;
+  const sky = skyOf(c.weather_code, c.is_day); document.body.dataset.sky = sky; syncThemeColor();
   document.body.classList.toggle('night', !c.is_day);
   document.body.classList.toggle('rain', /^(overcast-day|rain-day|storm)$/.test(sky));
   $('#curIcon').innerHTML = wIcon(c.weather_code, c.is_day);
@@ -783,6 +791,11 @@ function bind() {
   };
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resume(); });
   window.addEventListener('pageshow', e => { if (e.persisted) resume(); });
+  // 스크롤하면 머리글 뒤에만 옅은 흐림
+  const tb = document.querySelector('.topbar'); let tbOn = false;
+  const onScroll = () => { const on = window.scrollY > 4; if (on !== tbOn) { tbOn = on; tb && tb.classList.toggle('scrolled', on); } };
+  window.addEventListener('scroll', onScroll, { passive: true }); onScroll();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', syncThemeColor);
   window.addEventListener('online', () => load({ force: true }));
 }
 
