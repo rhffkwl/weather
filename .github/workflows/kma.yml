@@ -1,0 +1,48 @@
+name: 기상청 예보 갱신
+
+on:
+  schedule:
+    - cron: "15 * * * *"   # hourly at :15 (초단기실황 HH:10~, 단기예보 02·05·…·23시 +10분, 중기예보 06·18시)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "이미 받은 발표도 다시 받기 (1=yes, 호출 수 주의)"
+        required: false
+        default: "0"
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: kma
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch KMA forecasts
+        env:
+          AIRKOREA_SERVICE_KEY: ${{ secrets.AIRKOREA_SERVICE_KEY }}   # 같은 공공데이터포털 계정 키 (기상청 서비스도 활용신청됨)
+          KMA_FORCE: ${{ github.event.inputs.force }}
+        run: python3 scripts/fetch_kma.py
+      - name: Commit if changed
+        id: commit
+        if: always()
+        run: |
+          git add data/kma 2>/dev/null || true
+          # meta.json만 바뀐 경우(호출 수 기록)는 커밋하지 않음
+          if git diff --cached --quiet -- data/kma ':!data/kma/meta.json'; then echo "No change in forecast data"; echo "pushed=0" >> "$GITHUB_OUTPUT"; exit 0; fi
+          git config user.name "rhffkwl"
+          git config user.email "rhffkwl@users.noreply.github.com"
+          git commit -q -m "data: KMA $(python3 -c 'import json;m=json.load(open("data/kma/meta.json"));print("실황",m.get("now"),"단기",m.get("vil"),"중기",m.get("mid"))')"
+          for i in 1 2 3 4; do git pull -q --rebase origin main && git push -q origin HEAD:main && break; sleep 7; done
+          echo "pushed=1" >> "$GITHUB_OUTPUT"
+      - name: Request Pages build
+        if: steps.commit.outputs.pushed == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X POST "repos/${{ github.repository }}/pages/builds" --silent || echo "pages build request skipped"
