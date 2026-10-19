@@ -9,12 +9,12 @@
  *   미세먼지: 에어코리아(한국환경공단) 실시간 측정값 — 가장 가까운 측정소.
  *   (3시간 넘게 오래됐거나 값이 없으면 Open-Meteo 예측값으로 대신 표시)
  * - 크기: 소형 · 중형 · 대형 (잠금화면 위젯도 간단히 지원)
- * - 위치: 현재 위치(실패 시 마지막 위치 → 서울). 국내 현재 위치 이름은 브이월드(국토교통부) 행정동, 해외는 iOS 주소.
+ * - 위치: 현재 위치(실패 시 마지막 위치 → 서울). 국내 현재 위치 이름은 브이월드(국토교통부) 시·구 + 법정동(대형은 자리가 되면 행정동도), 해외는 iOS 주소.
  *   위젯 길게 누르기 > 위젯 편집 > Parameter 에 도시 이름(예: 부산, 제주, 강릉)을 넣으면 그 도시를 표시합니다.
  *   "37.57,126.98" 처럼 위도,경도를 직접 넣어도 됩니다.
  * - 웹앱: https://rhffkwl.github.io/weather/
  */
-const WIDGET_VERSION = "2026-10-19b"; // 앱에서 실행하면 로그에 출력됩니다
+const WIDGET_VERSION = "2026-10-19c"; // 앱에서 실행하면 로그에 출력됩니다
 
 const CONFIG = {
   appURL: "https://rhffkwl.github.io/weather/",
@@ -284,16 +284,30 @@ function kmaHourLabel(base) { return base ? Number(String(base).slice(8, 10)) + 
 
 
 /* ---------------- 위치 ---------------- */
-// 국내 현재 위치 이름: 브이월드(국토교통부) 역지오코딩 → '용산구 한강로동'. 실패하거나 해외면 iOS 주소(reverseGeocode).
+// 국내 현재 위치 이름: 브이월드(국토교통부) 역지오코딩 → '의정부시 민락동'(+ 자리가 되면 행정동 '송산3동'). 실패하거나 해외면 iOS 주소(reverseGeocode).
 const VWORLD_KEY = "532F6A41-960A-47CD-ADAE-0AA007AD1C37"; // 서비스 URL https://rhffkwl.github.io/weather/ 용 키
-function vwLabel(st) {
-  if (!st) return null;
-  const parts = String(st.level2 || "").trim().split(/\s+/).filter(Boolean);
-  const gu = String(st.level3 || "").trim() || parts[parts.length - 1] || "";
-  const dong = String(st.level4A || "").trim() || String(st.level4L || "").trim();
+/* VW:BEGIN — 브이월드 getAddress(type=both) 결과 → 위치 이름. 웹앱과 위젯에 같은 코드가 들어갑니다 (scripts/vw-label.js).
+   지번(parcel): level4L = 법정동(예: 민락동, 한강로2가), level4A/level4AC = 행정동(예: 송산3동, 한강로동, 비어 있을 때도 있음)
+   도로명(road): level3 = 법정동, level4L = 도로명, level4A = 행정동
+   → { name: '의정부시 민락동'(시·구 + 법정동), hj: '송산3동'(법정동과 다를 때만), area: '경기도'(시도 [+ 시]) } */
+function vwParse(list) {
+  const rs = (list || []).filter(x => x && x.structure);
+  const S = (x, k) => String((x && x.structure && x.structure[k]) || "").trim();
+  const p = rs.find(x => x.type === "parcel" && S(x, "level4L")) || null;
+  const rd = rs.find(x => x.type === "road") || null;
+  const base = p || rd; if (!base) return null;
+  const parts = S(base, "level2").split(/\s+/).filter(Boolean);
+  const gu = parts[parts.length - 1] || (p ? S(p, "level3") : "");
+  const bj = p ? S(p, "level4L") : S(rd, "level3");
+  const hj0 = S(p, "level4A") || S(rd, "level4A");
+  const dong = bj || hj0;
   const name = [gu, dong].filter(Boolean).join(" ");
-  return name ? { name } : null;
+  if (!name) return null;
+  const hj = hj0 && hj0 !== dong ? hj0 : "";
+  const area = [S(base, "level1"), parts.slice(0, -1).join(" ")].filter(Boolean).join(" ");
+  return { name, hj, area };
 }
+/* VW:END */
 // 위젯은 백그라운드라 기다려도 화면이 멈추지 않음: 날씨 받기와 동시에 진행하고, 1차 6초 → 1초 쉬고 2차 5초.
 // (셀룰러·위젯 확장의 첫 연결은 DNS+TLS만 1~2초 걸릴 수 있어 웹앱의 3초/2초보다 넉넉하게)
 const VW_TRY_SEC = [6, 5], VW_GAP_SEC = 1;
@@ -316,17 +330,9 @@ async function vworldOnce(lat, lon, sec) {
   const j = await req.loadJSON();
   const r = j && j.response;
   if (!r || r.status !== "OK") throw new Error("vworld " + (r ? r.status : "응답 없음"));
-  const v = vwPick(r.result);
+  const v = vwParse(r.result);
   if (!v) throw new Error("vworld 결과 없음");
-  return v.name;
-}
-// 지번(parcel) 결과를 우선. 도로명(road) 결과는 level3에 법정동, level4L에 도로명이 들어 있어 시·구 + 행정동만 씀
-function vwPick(list) {
-  const rs = (list || []).filter(x => x && x.structure);
-  const p = rs.find(x => x.type === "parcel" && (x.structure.level4A || x.structure.level4L));
-  if (p) return vwLabel(p.structure);
-  const rd = rs.find(x => x.structure.level4A);
-  return rd ? vwLabel(Object.assign({}, rd.structure, { level3: "", level4L: "" })) : null;
+  return v;
 }
 const FC_RANK = { PPLC: 6, PPLA: 5, PPLA2: 4, PPLA3: 3, PPLA4: 2, PPL: 1, ADM1: 1, ADM2: 1 };
 async function geocode(q) {
@@ -366,7 +372,7 @@ async function resolveName(lat, lon) {
     try { vw = await withTimeout(vworldName(lat, lon), 13, "브이월드"); } catch (e) { vwErr = e.message; }
   }
   const iosName = await ios;
-  const out = vw ? { name: vw, nameSrc: "vworld", iosName } : iosName ? { name: iosName, nameSrc: "ios", iosName } : { name: "현재 위치", nameSrc: "", iosName: null };
+  const out = vw ? { name: vw.name, hj: vw.hj, nameSrc: "vworld", iosName } : iosName ? { name: iosName, nameSrc: "ios", iosName } : { name: "현재 위치", nameSrc: "", iosName: null };
   out.vwErr = vwErr;
   return out;
 }
@@ -463,7 +469,7 @@ function buildModel(raw, offline) {
   const yi = h.time.findIndex(t => t.slice(0, 13) === seoulISO(Date.now() - 86400000).slice(0, 13));
   const yday = yi >= 0 ? yesterdayCompare(c.temperature_2m, h.temperature_2m[yi]) : null;
   return {
-    place: loc.name, source: loc.source,
+    place: loc.name, place2: loc.hj || "", source: loc.source,
     temp: c.temperature_2m, feels: c.apparent_temperature, yday,
     code: c.weather_code, isDay, info: Object.assign(weatherInfo(c.weather_code, isDay), c.kma_desc ? { text: c.kma_desc } : {}),
     wxSource: fc.kma ? "kma" : "om",
@@ -563,11 +569,19 @@ function pm25Pill(stack, m, size) {
   if (m.pm25) return pill(stack, `초미세 ${m.pm25.label}`, m.pm25.color, size);
   return pill(stack, "초미세 -", "#8E8E93", size);
 }
-function placeRow(stack, m, size) {
+// 글자 폭 어림(넉넉하게): 한글 1.0em, 숫자 0.62em, 공백 0.3em, 기타 0.6em
+function estW(str, size) { let w = 0; for (const ch of String(str)) w += /[가-힣]/.test(ch) ? size : /[0-9]/.test(ch) ? size * 0.62 : ch === " " ? size * 0.3 : size * 0.6; return w; }
+// 이름 한 줄: '의정부시 민락동' + (가장 작은 아이폰 기준으로 잘리지 않을 때만) 작고 흐린 ' · 송산3동'
+function placeRow(stack, m, size, avail) {
   const r = stack.addStack();
   r.centerAlignContent();
-  if (/^gps/.test(m.source)) { addSymbol(r, "location.fill", size - 3, WHITE); r.addSpacer(3); }
+  const gps = /^gps/.test(m.source);
+  if (gps) { addSymbol(r, "location.fill", size - 3, WHITE); r.addSpacer(3); }
   addText(r, m.place, Font.semiboldSystemFont(size), WHITE);
+  if (m.place2 && avail) {
+    const extra = " · " + m.place2, used = (gps ? size : 0) + estW(m.place, size) + estW(extra, size - 3);
+    if (used <= avail * 0.92) { const t = addText(r, extra, Font.systemFont(size - 3), SUB); t.minimumScaleFactor = 1; }
+  }
   return r;
 }
 function hourlyRow(stack, m, opts) {
@@ -599,7 +613,7 @@ function centerText(stack, w, h, str, font, color) { const b = fixedBox(stack, w
 function smallWidget(w, m) {
   w.setPadding(12, 12, 12, 12);
   const top = w.addStack(); top.centerAlignContent();
-  placeRow(top, m, 12);
+  placeRow(top, m, 12, 141 - 24);
   top.addSpacer();
   w.addSpacer(2);
   const row = w.addStack(); row.centerAlignContent();
@@ -638,7 +652,7 @@ function mediumWidget(w, m) {
   w.setPadding(12, 14, 12, 12);
   const main = w.addStack(); main.layoutHorizontally();
   const left = main.addStack(); left.layoutVertically(); left.size = new Size(MED.left, 0);
-  placeRow(left, m, 12);
+  placeRow(left, m, 12, MED.left);
   left.addSpacer(1);
   const tr = left.addStack(); tr.centerAlignContent(); tr.size = new Size(MED.left, 34);
   addText(tr, tempStr(m.temp), Font.boldSystemFont(28), WHITE);
@@ -725,7 +739,7 @@ function airBlock(stack, title, sub, lvl) {
 function largeWidget(w, m) {
   w.setPadding(16, 16, 14, 16);
   const hdr = w.addStack(); hdr.centerAlignContent();
-  placeRow(hdr, m, 15);
+  placeRow(hdr, m, 15, 329 - 32 - estW(updatedLabel(m), 10) - 8);
   hdr.addSpacer();
   addText(hdr, updatedLabel(m), Font.systemFont(10), FAINT);
   w.addSpacer(6);
@@ -844,7 +858,7 @@ async function main() {
     if (np) {
       // 날씨가 먼저 끝나면 이름은 남은 시간만큼만 기다림 → 못 받으면 iOS 이름/이전 이름
       const n = await Promise.race([np, sleep(left()).then(() => null)]) || { name: (cache && cache.loc && cache.loc.name) || "현재 위치", nameSrc: "", iosName: null, vwErr: "시간 초과" };
-      loc.name = n.name; loc.nameSrc = n.nameSrc;
+      loc.name = n.name; loc.nameSrc = n.nameSrc; loc.hj = n.hj || "";
       writeJSON(fm.joinPath(DIR, "last-name.json"), { v: WIDGET_VERSION, at: seoulISO(Date.now()), nameSrc: n.nameSrc, vwErr: n.vwErr || "" }); // 진단용(이름 자체는 저장 안 함)
       console.log(`[${WIDGET_VERSION}] 위치 이름 출처: ${n.nameSrc || "없음"}${n.vwErr ? " · 브이월드 실패: " + n.vwErr : ""}`);
       loc.iosName = n.iosName;
@@ -853,7 +867,7 @@ async function main() {
     const raw = { loc, fc, aq: aq || (sameLoc ? cache.aq : null), ak: ak || (sameLoc ? cache.ak : null), fetchedAt: Date.now() };
     model = buildModel(raw, false);
     // 브이월드 이름은 파일에 남기지 않음(약관): 저장본에는 iOS 이름(없으면 '현재 위치')
-    const keep = loc.nameSrc === "vworld" ? Object.assign({}, loc, { name: loc.iosName || "현재 위치", nameSrc: loc.iosName ? "ios" : "" }) : loc;
+    const keep = loc.nameSrc === "vworld" ? Object.assign({}, loc, { name: loc.iosName || "현재 위치", nameSrc: loc.iosName ? "ios" : "", hj: "" }) : loc;
     writeJSON(cacheFile, Object.assign({}, raw, { loc: keep }));
   } catch (e) {
     err = e;
