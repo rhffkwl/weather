@@ -3,7 +3,7 @@
 아이폰용 날씨 웹앱 (https://rhffkwl.github.io/weather/) + Scriptable 홈 화면 위젯 (`widget/`).
 
 - 예보: **국내는 기상청, 해외는 Open-Meteo** 자동 전환.
-  - `.github/workflows/kma.yml`: 매시 15분 `scripts/fetch_kma.py`가 `data/kma/points.json`의 대표 격자점(시군구별 + 빈 곳 보충, 약 257개)에 대해
+  - `.github/workflows/kma.yml`: 15분마다(7·22·37·52분, 새 발표가 있을 때만 호출) `scripts/fetch_kma.py`가 `data/kma/points.json`의 대표 격자점(시군구별 + 빈 곳 보충, 약 257개)에 대해
     기상청 초단기실황(매시) · 단기예보(02·05·…·23시 발표) · 중기육상/기온예보(06·18시)를 받아 `data/kma/now.json`, `hist.json`(어제 같은 시각 비교용),
     `f/<nx>_<ny>.json`, `mid.json`으로 저장(변경 시에만 커밋). 새 발표가 없으면 호출하지 않음. 호출 수는 `data/kma/meta.json`에 기록하고 오퍼레이션별 하루 9,500회를 넘기지 않음.
   - 앱·위젯: 위치가 국내이고 25km 안에 대표 격자점이 있으면 기상청 값(현재 기온·습도·바람·강수형태, 시간별 기온·강수확률·하늘, 일별 최저/최고·날씨)으로 덮어씀.
