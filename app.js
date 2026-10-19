@@ -305,22 +305,35 @@ async function fetchWeather(l) {
   cacheSet(l, d);
   return d;
 }
-/* ---- 위치명: 국내는 브이월드(국토교통부) 역지오코딩 → 행정동, 해외·실패 시 BigDataCloud ---- */
+/* ---- 위치명: 국내는 브이월드(국토교통부) 역지오코딩 → 법정동(제목)·행정동(부제), 해외·실패 시 BigDataCloud ---- */
 // 브이월드 키는 서비스 URL(https://rhffkwl.github.io/weather/)에 묶인 브라우저용 키입니다.
 const VWORLD_KEY = '532F6A41-960A-47CD-ADAE-0AA007AD1C37';
 const VW_TRY_MS = [3000, 2000], VW_RETRY_GAP = 1000; // 1차 3초 → 1초 쉬고 2차 2초: 최악 ~6초 뒤 BigDataCloud
 const vwMem = new Map(); // 브이월드 약관상 결과를 저장하지 않으므로 세션 메모리에만 둡니다 (~100m 격자)
-// structure → { name: '용산구 한강로동', sub: '서울특별시, 대한민국' }
-function vwLabel(st) {
-  if (!st) return null;
-  const l2 = (st.level2 || '').trim(), parts = l2.split(/\s+/).filter(Boolean);
-  const gu = (st.level3 || '').trim() || parts[parts.length - 1] || '';
-  const dong = (st.level4A || '').trim() || (st.level4L || '').trim();
-  const name = [gu, dong].filter(Boolean).join(' ');
+/* VW:BEGIN — 브이월드 getAddress(type=both) 결과 → 위치 이름. 웹앱과 위젯에 같은 코드가 들어갑니다 (scripts/vw-label.js).
+   지번(parcel): level4L = 법정동(예: 민락동, 한강로2가), level4A/level4AC = 행정동(예: 송산3동, 한강로동, 비어 있을 때도 있음)
+   도로명(road): level3 = 법정동, level4L = 도로명, level4A = 행정동
+   → { name: '의정부시 민락동'(시·구 + 법정동), hj: '송산3동'(법정동과 다를 때만), area: '경기도'(시도 [+ 시]) } */
+function vwParse(list) {
+  const rs = (list || []).filter(x => x && x.structure);
+  const S = (x, k) => String((x && x.structure && x.structure[k]) || "").trim();
+  const p = rs.find(x => x.type === "parcel" && S(x, "level4L")) || null;
+  const rd = rs.find(x => x.type === "road") || null;
+  const base = p || rd; if (!base) return null;
+  const parts = S(base, "level2").split(/\s+/).filter(Boolean);
+  const gu = parts[parts.length - 1] || (p ? S(p, "level3") : "");
+  const bj = p ? S(p, "level4L") : S(rd, "level3");
+  const hj0 = S(p, "level4A") || S(rd, "level4A");
+  const dong = bj || hj0;
+  const name = [gu, dong].filter(Boolean).join(" ");
   if (!name) return null;
-  const sub = [[st.level1, parts.length > 1 ? parts.slice(0, -1).join(' ') : ''].filter(Boolean).join(' '), '대한민국'].filter(Boolean).join(', ');
-  return { name, sub };
+  const hj = hj0 && hj0 !== dong ? hj0 : "";
+  const area = [S(base, "level1"), parts.slice(0, -1).join(" ")].filter(Boolean).join(" ");
+  return { name, hj, area };
 }
+/* VW:END */
+// 웹앱 표시: 제목 = 시·구 + 법정동, 부제 = 행정동 · 시도
+function vwLabel(list) { const v = vwParse(list); return v && { name: v.name, sub: [v.hj, v.area].filter(Boolean).join(' · '), hj: v.hj }; }
 // CORS 헤더가 없어 fetch는 막힘 → JSONP (format=json&callback=…)
 async function vworldName(lat, lon) {
   const k = (+lat).toFixed(3) + ',' + (+lon).toFixed(3);
@@ -342,8 +355,7 @@ function vworldOnce(lat, lon, ms) {
     window[cb] = j => {
       const r = j && j.response;
       if (!r || r.status !== 'OK') return done(new Error('vworld ' + (r ? r.status + ' ' + ((r.error && r.error.code) || '') : 'bad response')));
-      const it = (r.result || []).find(x => x.structure && (x.structure.level4A || x.structure.level4L)) || (r.result || [])[0];
-      const v = it && vwLabel(it.structure);
+      const v = vwLabel(r.result);
       if (!v) return done(new Error('vworld empty'));
       v.src = 'vworld'; done(null, v);
     };
