@@ -299,14 +299,61 @@ async function fetchWeather(l) {
   cacheSet(l, d);
   return d;
 }
+/* ---- 위치명: 국내는 브이월드(국토교통부) 역지오코딩 → 행정동, 해외·실패 시 BigDataCloud ---- */
+// 브이월드 키는 서비스 URL(https://rhffkwl.github.io/weather/)에 묶인 브라우저용 키입니다.
+const VWORLD_KEY = '532F6A41-960A-47CD-ADAE-0AA007AD1C37';
+const VW_TIMEOUT = 4500;
+const vwMem = new Map(); // 브이월드 약관상 결과를 저장하지 않으므로 세션 메모리에만 둡니다 (~100m 격자)
+// structure → { name: '용산구 한강로동', sub: '서울특별시, 대한민국' }
+function vwLabel(st) {
+  if (!st) return null;
+  const l2 = (st.level2 || '').trim(), parts = l2.split(/\s+/).filter(Boolean);
+  const gu = (st.level3 || '').trim() || parts[parts.length - 1] || '';
+  const dong = (st.level4A || '').trim() || (st.level4L || '').trim();
+  const name = [gu, dong].filter(Boolean).join(' ');
+  if (!name) return null;
+  const sub = [[st.level1, parts.length > 1 ? parts.slice(0, -1).join(' ') : ''].filter(Boolean).join(' '), '대한민국'].filter(Boolean).join(', ');
+  return { name, sub };
+}
+// CORS 헤더가 없어 fetch는 막힘 → JSONP (format=json&callback=…)
+function vworldName(lat, lon) {
+  const k = (+lat).toFixed(3) + ',' + (+lon).toFixed(3);
+  if (vwMem.has(k)) return Promise.resolve(vwMem.get(k));
+  return new Promise((resolve, reject) => {
+    const cb = '__vw' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    const s = document.createElement('script');
+    const done = (err, v) => { clearTimeout(t); window[cb] = () => {}; setTimeout(() => { try { delete window[cb]; } catch {} }, 30000); s.remove(); err ? reject(err) : resolve(v); };
+    const t = setTimeout(() => done(new Error('vworld timeout')), VW_TIMEOUT);
+    window[cb] = j => {
+      const r = j && j.response;
+      if (!r || r.status !== 'OK') return done(new Error('vworld ' + (r ? r.status + ' ' + ((r.error && r.error.code) || '') : 'bad response')));
+      const it = (r.result || []).find(x => x.structure && (x.structure.level4A || x.structure.level4L)) || (r.result || [])[0];
+      const v = it && vwLabel(it.structure);
+      if (!v) return done(new Error('vworld empty'));
+      v.src = 'vworld'; vwMem.set(k, v); done(null, v);
+    };
+    s.onerror = () => done(new Error('vworld load error'));
+    s.referrerPolicy = 'no-referrer-when-downgrade'; // 등록한 서비스 URL과 같은 전체 주소를 Referer로
+    s.src = 'https://api.vworld.kr/req/address?' + new URLSearchParams({ service: 'address', request: 'getAddress', version: '2.0', crs: 'epsg:4326',
+      point: `${(+lon).toFixed(6)},${(+lat).toFixed(6)}`, type: 'both', zipcode: 'false', format: 'json', errorFormat: 'json', key: VWORLD_KEY,
+      domain: 'https://rhffkwl.github.io/weather/', callback: cb });
+    document.head.appendChild(s);
+  });
+}
 async function reverseName(lat, lon) {
+  if (kmaInKorea(lat, lon)) {
+    try { return await vworldName(lat, lon); } catch (e) { console.info('VWorld name unavailable, using BigDataCloud', e && e.message); }
+  }
+  return bdcName(lat, lon);
+}
+async function bdcName(lat, lon) {
   try {
     const j = await getJSON(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=ko`, 8000);
     const city = j.city || j.principalSubdivision || '';
     const name = j.locality && j.locality !== city ? j.locality : (city || '현재 위치');
     const sub = [city !== name ? city : '', j.countryName].filter(Boolean).join(', ');
-    return { name, sub };
-  } catch { return { name: '현재 위치', sub: '' }; }
+    return { name, sub, src: 'bdc' };
+  } catch { return { name: '현재 위치', sub: '', src: 'none' }; }
 }
 function geolocate() {
   return new Promise((res, rej) => {
@@ -319,9 +366,13 @@ async function resolveHere() {
     const c = await geolocate();
     const lat = +c.latitude.toFixed(4), lon = +c.longitude.toFixed(4);
     const prev = state.here;
-    let nm = (prev && !prev.fallback && Math.abs(prev.lat - lat) < 0.01 && Math.abs(prev.lon - lon) < 0.01) ? prev : null;
-    if (!nm) nm = await reverseName(lat, lon);
-    state.here = { lat, lon, name: nm.name, sub: nm.sub, fallback: false };
+    // 1km 안에서는 이전 이름을 다시 씀. 단, 국내인데 브이월드 이름이 아니면(예전 이름·일시 실패) 30분마다 다시 시도
+    const near = prev && !prev.fallback && Math.abs(prev.lat - lat) < 0.01 && Math.abs(prev.lon - lon) < 0.01;
+    const wantVw = kmaInKorea(lat, lon) && !(prev && prev.src === 'vworld') && !(prev && prev.vwTry && Date.now() - prev.vwTry < 30 * 60e3);
+    let nm = near && !wantVw ? prev : null;
+    let vwTry = prev && near ? prev.vwTry : 0;
+    if (!nm) { nm = await reverseName(lat, lon); if (kmaInKorea(lat, lon) && nm.src !== 'vworld') vwTry = Date.now(); }
+    state.here = { lat, lon, name: nm.name, sub: nm.sub, src: nm.src, vwTry, fallback: false };
   } catch (e) {
     if (!state.here || state.here.fallback) {
       state.here = { ...SEOUL, fallback: true };
