@@ -42,7 +42,7 @@ a{color:inherit;text-decoration:underline;text-underline-offset:2px}
 }
 /* 맨 위에서는 머리글 배경 없음(하늘이 상태 막대까지 이어짐). 스크롤하면 아래로 부드럽게 사라지는 흐림만 살짝 */
 .topbar::before{content:"";position:absolute;inset:0 0 -18px 0;z-index:-1;pointer-events:none;opacity:0;transition:opacity .25s ease;
-  background:linear-gradient(180deg,color-mix(in srgb,var(--bg1) 62%,transparent),color-mix(in srgb,var(--bg1) 0%,transparent));
+  background:linear-gradient(180deg,color-mix(in srgb,var(--bg1) 94%,transparent) 0,color-mix(in srgb,var(--bg1) 70%,transparent) 55%,color-mix(in srgb,var(--bg1) 0%,transparent) 100%);
   backdrop-filter:blur(14px) saturate(1.4);-webkit-backdrop-filter:blur(14px) saturate(1.4);
   -webkit-mask-image:linear-gradient(#000 0,#000 62%,transparent 100%);mask-image:linear-gradient(#000 0,#000 62%,transparent 100%)}
 .topbar.scrolled::before{opacity:1}
@@ -159,7 +159,10 @@ body.night .sheet-panel,body.rain .sheet-panel{--fg:#eef4ff}
 /* 하늘 그라데이션은 화면에 고정된 한 장(#sky)으로: iOS는 background-attachment:fixed를 지원하지 않아
    예전엔 그라데이션만 스크롤되고 별·구름은 고정돼 띠가 생겼음. 상태 막대 아래까지(viewport-fit=cover) 덮음 */
 #sky{position:fixed;left:0;right:0;top:calc(-1 * var(--sat) - 60px);bottom:-60px;z-index:-2;pointer-events:none;
-  background:linear-gradient(180deg,var(--bg1) 0,var(--bg1) calc(var(--sat) + 60px),var(--bg2) 100%)}
+  background:linear-gradient(180deg,var(--bg1) 0,var(--bg1) calc(var(--sat) * 2 + 70px),var(--bg2) 100%);background-color:var(--bg1)}
+/* Safari 26(iOS 26)은 theme-color를 무시하고, 맨 위에 닿은 fixed/sticky 요소의 background-color로 상태 막대를 칠함.
+   하늘 맨 위 색과 같은 얇은 띠를 두어 상태 막대 = 하늘 색 (없으면 반투명 막대라 다른 색 띠처럼 보였음) */
+#tint{position:fixed;top:0;left:0;right:0;height:4px;z-index:-1;pointer-events:none;background-color:var(--bg1)}
 body[data-sky]::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background-repeat:no-repeat}
 body[data-sky="clear-day"]{--bg1:#4f9bef;--bg2:#a8d1ff}
 body[data-sky="cloudy-day"]{--bg1:#6f97c4;--bg2:#b9cde2}
