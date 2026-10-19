@@ -70,7 +70,7 @@ table { border-collapse:collapse; width:100%; font-size:14px; } td,th { border-b
  *   미세먼지: 에어코리아(한국환경공단) 실시간 측정값 — 가장 가까운 측정소.
  *   (3시간 넘게 오래됐거나 값이 없으면 Open-Meteo 예측값으로 대신 표시)
  * - 크기: 소형 · 중형 · 대형 (잠금화면 위젯도 간단히 지원)
- * - 위치: 현재 위치(실패 시 마지막 위치 → 서울).
+ * - 위치: 현재 위치(실패 시 마지막 위치 → 서울). 국내 현재 위치 이름은 브이월드(국토교통부) 행정동, 해외는 iOS 주소.
  *   위젯 길게 누르기 &gt; 위젯 편집 &gt; Parameter 에 도시 이름(예: 부산, 제주, 강릉)을 넣으면 그 도시를 표시합니다.
  *   &quot;37.57,126.98&quot; 처럼 위도,경도를 직접 넣어도 됩니다.
  * - 웹앱: https://rhffkwl.github.io/weather/
@@ -337,6 +337,30 @@ function kmaHourLabel(base) { return base ? Number(String(base).slice(8, 10)) + 
 
 
 /* ---------------- 위치 ---------------- */
+// 국내 현재 위치 이름: 브이월드(국토교통부) 역지오코딩 → &#x27;용산구 한강로동&#x27;. 실패하거나 해외면 iOS 주소(reverseGeocode).
+const VWORLD_KEY = &quot;532F6A41-960A-47CD-ADAE-0AA007AD1C37&quot;; // 서비스 URL https://rhffkwl.github.io/weather/ 용 키
+function vwLabel(st) {
+  if (!st) return null;
+  const parts = String(st.level2 || &quot;&quot;).trim().split(/\s+/).filter(Boolean);
+  const gu = String(st.level3 || &quot;&quot;).trim() || parts[parts.length - 1] || &quot;&quot;;
+  const dong = String(st.level4A || &quot;&quot;).trim() || String(st.level4L || &quot;&quot;).trim();
+  const name = [gu, dong].filter(Boolean).join(&quot; &quot;);
+  return name ? { name } : null;
+}
+async function vworldName(lat, lon) {
+  const req = new Request(&quot;https://api.vworld.kr/req/address?&quot; + qs({ service: &quot;address&quot;, request: &quot;getAddress&quot;, version: &quot;2.0&quot;, crs: &quot;epsg:4326&quot;,
+    point: lon.toFixed(6) + &quot;,&quot; + lat.toFixed(6), type: &quot;both&quot;, zipcode: &quot;false&quot;, format: &quot;json&quot;, errorFormat: &quot;json&quot;, key: VWORLD_KEY,
+    domain: &quot;https://rhffkwl.github.io/weather/&quot; }));
+  req.timeoutInterval = 6;
+  req.headers = { Referer: &quot;https://rhffkwl.github.io/weather/&quot; };
+  const j = await req.loadJSON();
+  const r = j &amp;&amp; j.response;
+  if (!r || r.status !== &quot;OK&quot;) throw new Error(&quot;vworld &quot; + (r ? r.status : &quot;응답 없음&quot;));
+  const it = (r.result || []).find(x =&gt; x.structure &amp;&amp; (x.structure.level4A || x.structure.level4L)) || (r.result || [])[0];
+  const v = it &amp;&amp; vwLabel(it.structure);
+  if (!v) throw new Error(&quot;vworld 결과 없음&quot;);
+  return v.name;
+}
 const FC_RANK = { PPLC: 6, PPLA: 5, PPLA2: 4, PPLA3: 3, PPLA4: 2, PPL: 1, ADM1: 1, ADM2: 1 };
 async function geocode(q) {
   const variants = [q];
@@ -380,13 +404,16 @@ async function resolveLocation(cache) {
     Location.setAccuracyToThreeKilometers();
     const l = await withTimeout(Location.current(), CONFIG.locationTimeout, &quot;위치&quot;);
     if (!l || !isNum(l.latitude)) throw new Error(&quot;위치 없음&quot;);
-    let name = &quot;현재 위치&quot;;
-    try {
+    let name = &quot;현재 위치&quot;, nameSrc = &quot;&quot;;
+    if (kmaInKorea(l.latitude, l.longitude)) {
+      try { name = await withTimeout(vworldName(l.latitude, l.longitude), 7, &quot;주소&quot;); nameSrc = &quot;vworld&quot;; } catch (e) { console.log(&quot;VWorld 실패, iOS 주소 사용: &quot; + e.message); }
+    }
+    if (!nameSrc) try {
       const rg = await withTimeout(Location.reverseGeocode(l.latitude, l.longitude, &quot;ko_KR&quot;), 5, &quot;주소&quot;);
       const a = rg &amp;&amp; rg[0];
-      if (a) name = a.subLocality || a.locality || a.administrativeArea || name;
+      if (a) { name = a.subLocality || a.locality || a.administrativeArea || name; nameSrc = &quot;ios&quot;; }
     } catch (e) {}
-    return { name, lat: l.latitude, lon: l.longitude, source: &quot;gps&quot; };
+    return { name, nameSrc, lat: l.latitude, lon: l.longitude, source: &quot;gps&quot; };
   } catch (e) {
     if (cache &amp;&amp; cache.loc &amp;&amp; /^gps/.test(cache.loc.source)) return Object.assign({}, cache.loc, { source: &quot;gps-cached&quot; });
     return Object.assign({}, CONFIG.fallback, { source: &quot;fallback&quot; });
