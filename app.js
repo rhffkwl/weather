@@ -382,12 +382,21 @@ async function bdcName(lat, lon) {
     return { name, sub, src: 'bdc' };
   } catch { return { name: '현재 위치', sub: '', src: 'none' }; }
 }
-function geolocate() {
+// 현재 위치는 열 때마다 새로: 1분 넘은 저장 위치는 쓰지 않음(예전엔 10분). 시간 초과면 GPS로 한 번 더.
+function geoOnce(o) {
   return new Promise((res, rej) => {
     if (!('geolocation' in navigator)) return rej(new Error('unsupported'));
-    navigator.geolocation.getCurrentPosition(p => res(p.coords), rej, { enableHighAccuracy: false, timeout: 10000, maximumAge: 10 * 60 * 1000 });
+    navigator.geolocation.getCurrentPosition(p => res(p.coords), rej, o);
   });
 }
+async function geolocate() {
+  try { return await geoOnce({ enableHighAccuracy: false, timeout: 10000, maximumAge: 60 * 1000 }); }
+  catch (e) { if (e && e.code === 1) throw e; return geoOnce({ enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }); }
+}
+// 위치 확인은 한 번에 하나만. 그 사이에 다른 load()가 와도(온라인 복귀·다시 열기 등) 같은 결과를 기다렸다가 새 위치로 그림.
+// (예전엔 나중 load()가 먼저 옛 위치로 그리고, 새 위치 결과는 버려져 '마장동'이 남는 일이 있었음)
+let herePending = null;
+function relocateHere() { if (!herePending) herePending = resolveHere().finally(() => { herePending = null; }); return herePending; }
 async function resolveHere() {
   try {
     const c = await geolocate();
@@ -401,9 +410,12 @@ async function resolveHere() {
     let nm = near && !wantVw ? prev : null;
     let vwTry = prev && near ? prev.vwTry : 0;
     if (!nm) { nm = await reverseName(lat, lon); if (kmaInKorea(lat, lon) && nm.src !== 'vworld') vwTry = Date.now(); }
-    state.here = { lat, lon, name: nm.name, sub: nm.sub, src: nm.src, vwTry, fallback: false };
+    state.here = { lat, lon, name: nm.name, sub: nm.sub, src: nm.src, vwTry, fallback: false, at: Date.now() };
   } catch (e) {
-    if (!state.here || state.here.fallback) {
+    if (state.here && !state.here.fallback) {
+      // 마지막 위치를 그대로 쓰되, 오래됐으면 알려 줌(예전엔 조용히 옛 위치를 보여 줌)
+      if (!state.here.at || Date.now() - state.here.at > 10 * 60e3) toast(e && e.code === 1 ? '위치 권한이 꺼져 있어 마지막 위치를 보여드려요' : '현재 위치를 확인하지 못해 마지막 위치를 보여드려요');
+    } else {
       state.here = { ...SEOUL, fallback: true };
       toast(e && e.code === 1 ? '위치 권한이 없어 서울 날씨를 보여드려요' : '위치를 확인할 수 없어 서울 날씨를 보여드려요');
     }
@@ -449,11 +461,26 @@ function setStatus(msg) { const s = $('#status'); s.hidden = !msg; s.textContent
 const hm = iso => iso ? iso.slice(11, 16) : '--:--';
 const fmtTime = ts => new Date(ts).toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' });
 
+// 시간별 줄은 항상 '지금'부터 보이게: 다시 그릴 때와 앱이 다시 보일 때(10분 안이라 새로 받지 않아도) 맨 앞으로.
+// iOS는 관성 스크롤 중에 scrollLeft를 바꾸면 무시할 때가 있어 다음 프레임에 한 번 더.
+function resetHourly() { const el = $('#hourly'); if (!el) return; el.scrollLeft = 0; requestAnimationFrame(() => { el.scrollLeft = 0; }); }
+function skyOf(code, day) {
+  const c = +code, d = day ? 'day' : 'night';
+  if (c >= 95) return 'storm';
+  if (c === 45 || c === 48) return 'fog-' + d;
+  if ((c >= 71 && c <= 77) || c === 85 || c === 86) return 'snow-' + d;
+  if (c >= 51) return 'rain-' + d;
+  if (c === 3) return 'overcast-' + d;
+  if (c === 2) return 'cloudy-' + d;
+  return 'clear-' + d;
+}
 function renderWeather(d) {
   if (!d || !d.f || !d.f.current || !d.f.hourly) return;
   const { f, a } = d; const c = f.current; const H = f.hourly; const D = f.daily;
+  // 날씨 배경: 상태·낮밤별 장면(style.css body[data-sky]). 글자색은 밝은 하늘이면 진하게, 어두운 하늘이면 흰색.
+  const sky = skyOf(c.weather_code, c.is_day); document.body.dataset.sky = sky;
   document.body.classList.toggle('night', !c.is_day);
-  document.body.classList.toggle('rain', c.weather_code >= 45 || c.weather_code === 3);
+  document.body.classList.toggle('rain', /^(overcast-day|rain-day|storm)$/.test(sky));
   $('#curIcon').innerHTML = wIcon(c.weather_code, c.is_day);
   $('#curTemp').textContent = r0(c.temperature_2m) + '°';
   $('#curDesc').textContent = c.kma_desc || wDesc(c.weather_code);
@@ -469,7 +496,7 @@ function renderWeather(d) {
     const lbl = i === i0 ? '지금' : (h === 0 ? '내일' : (h < 12 ? '오전 ' : '오후 ') + ((h % 12) || 12) + '시');
     hh += `<div class="hr${i === i0 ? ' now' : ''}"><span class="tm">${lbl}</span><span class="ic">${wIcon(H.weather_code[i], H.is_day[i])}</span><span class="tp">${r0(i === i0 ? c.temperature_2m : H.temperature_2m[i])}°</span><span class="pp">${pp >= 10 ? pp + '%' : ''}</span></div>`;
   }
-  $('#hourly').innerHTML = hh; $('#hourly').scrollLeft = 0;
+  $('#hourly').innerHTML = hh; resetHourly();
 
   // details
   const feelsDiff = c.apparent_temperature - c.temperature_2m;
@@ -535,10 +562,11 @@ async function load(opts = {}) {
   const seq = ++loadSeq;
   let l = active();
   if (l.lat != null) { renderHeader(l); const c0 = cacheGet(l); if (c0 && c0.f && c0.f.hourly) renderWeather(c0); else renderEmpty(); }
-  if (l.id === 'here' && (opts.relocate || l.lat == null)) {
+  if (l.id === 'here' && (opts.relocate || l.lat == null || herePending)) {
     if (l.lat == null) { renderHeader({ id: 'here', name: '위치 확인 중…' }); renderEmpty(); setStatus('위치 확인 중…'); }
+    else setStatus('현재 위치 확인 중…');
     const before = l.lat != null ? keyOf(l.lat, l.lon) : '';
-    await resolveHere(); if (seq !== loadSeq) return; l = active(); renderTabs();
+    await relocateHere(); if (seq !== loadSeq) return; l = active(); renderTabs();
     if (keyOf(l.lat, l.lon) !== before) opts.force = true;
   }
   renderHeader(l);
@@ -747,10 +775,14 @@ function bind() {
     if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.6 && Date.now() - st < 700) step(dx < 0 ? 1 : -1);
   }, { passive: true });
 
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'visible') return; const d = cacheGet(active());
-    if (!d || Date.now() - d.ts > 10 * 60 * 1000) load({ relocate: state.activeId === 'here' });
-  });
+  // 다시 열 때(홈 화면 앱 복귀·위젯에서 열기·뒤로가기 캐시): 현재 위치 탭이면 1분 넘은 위치는 항상 새로 확인
+  const resume = () => {
+    resetHourly(); const d = cacheGet(active());
+    const hereOld = state.activeId === 'here' && (!state.here || !state.here.at || Date.now() - state.here.at > 60 * 1000);
+    if (hereOld) load({ relocate: true }); else if (!d || Date.now() - d.ts > 10 * 60 * 1000) load({});
+  };
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') resume(); });
+  window.addEventListener('pageshow', e => { if (e.persisted) resume(); });
   window.addEventListener('online', () => load({ force: true }));
 }
 
