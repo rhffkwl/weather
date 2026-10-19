@@ -75,7 +75,7 @@ table { border-collapse:collapse; width:100%; font-size:14px; } td,th { border-b
  *   &quot;37.57,126.98&quot; 처럼 위도,경도를 직접 넣어도 됩니다.
  * - 웹앱: https://rhffkwl.github.io/weather/
  */
-const WIDGET_VERSION = &quot;2026-10-19c&quot;; // 앱에서 실행하면 로그에 출력됩니다
+const WIDGET_VERSION = &quot;2026-10-19d&quot;; // 앱에서 실행하면 로그에 출력됩니다
 
 const CONFIG = {
   appURL: &quot;https://rhffkwl.github.io/weather/&quot;,
@@ -595,6 +595,103 @@ function background(m) {
   return g;
 }
 
+/* ---------------- 날씨 배경 그림 (DrawContext) ----------------
+   그라데이션(위 background()와 같은 색) + 상태별 장면: 맑은 낮 햇무리, 맑은 밤 별, 구름 많음/흐림 부드러운 구름,
+   비 빗줄기, 눈 눈송이, 안개 옅은 띠, 뇌우 어두운 구름. 아래쪽은 살짝 어둡게 해서 흰 글자가 잘 보이게. */
+const FAMILY_PT = { small: [170, 170], medium: [364, 170], large: [364, 382], extraLarge: [780, 382] };
+function hexRGB(h) { const n = parseInt(h.replace(&quot;#&quot;, &quot;&quot;), 16); return [(n &gt;&gt; 16) &amp; 255, (n &gt;&gt; 8) &amp; 255, n &amp; 255]; }
+function rgbHex(r, g, b) { return &quot;#&quot; + [r, g, b].map(v =&gt; Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, &quot;0&quot;)).join(&quot;&quot;); }
+function mixHex(a, b, t) { const A = hexRGB(a), B = hexRGB(b); return rgbHex(A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t, A[2] + (B[2] - A[2]) * t); }
+function rng(seed) { let x = seed &gt;&gt;&gt; 0 || 1; return () =&gt; ((x = (x * 1664525 + 1013904223) &gt;&gt;&gt; 0) / 4294967296); }
+function skyScene(code, isDay) {
+  const c = Number(code);
+  if (c &gt;= 95) return &quot;storm&quot;;
+  if (c === 45 || c === 48) return &quot;fog&quot;;
+  if ((c &gt;= 71 &amp;&amp; c &lt;= 77) || c === 85 || c === 86) return &quot;snow&quot;;
+  if (c &gt;= 51) return &quot;rain&quot;;
+  if (c === 3) return isDay ? &quot;overcast-day&quot; : &quot;overcast-night&quot;;
+  if (c === 2) return isDay ? &quot;cloudy-day&quot; : &quot;cloudy-night&quot;;
+  return isDay ? &quot;clear-day&quot; : &quot;clear-night&quot;;
+}
+const SKY = { // [위, 아래]
+  &quot;clear-day&quot;: [&quot;#3E95EC&quot;, &quot;#1F63BF&quot;], &quot;clear-night&quot;: [&quot;#16234A&quot;, &quot;#070C1E&quot;],
+  &quot;cloudy-day&quot;: [&quot;#5C8DC4&quot;, &quot;#33598C&quot;], &quot;cloudy-night&quot;: [&quot;#222E48&quot;, &quot;#0C1222&quot;],
+  &quot;overcast-day&quot;: [&quot;#71859E&quot;, &quot;#465870&quot;], &quot;overcast-night&quot;: [&quot;#283140&quot;, &quot;#10151F&quot;],
+  rain: [&quot;#4D5F78&quot;, &quot;#232F40&quot;], snow: [&quot;#7F93AE&quot;, &quot;#506580&quot;], fog: [&quot;#7C8794&quot;, &quot;#535E6B&quot;], storm: [&quot;#353A52&quot;, &quot;#14162A&quot;],
+};
+function softCloud(ctx, cx, cy, w, alpha, hex) {
+  // 겹친 타원 + 가장자리를 여러 겹 옅게(깃털처럼) → 테두리 없는 부드러운 구름
+  const parts = [[0, 0.06, 0.62, 0.34], [-0.3, 0.12, 0.46, 0.26], [0.3, 0.1, 0.5, 0.28], [-0.06, -0.06, 0.44, 0.32], [0.16, -0.02, 0.36, 0.26]];
+  const L = 7;
+  for (let j = 0; j &lt; L; j++) {
+    const k = 1.5 - j * 0.09; ctx.setFillColor(new Color(hex, alpha / L * (0.6 + j * 0.15)));
+    for (const [dx, dy, rw, rh] of parts) { const ew = w * rw * k, eh = w * rh * k; ctx.fillEllipse(new Rect(cx + dx * w - ew / 2, cy + dy * w - eh / 2, ew, eh)); }
+  }
+}
+function backgroundImage(m, family) {
+  const pt = FAMILY_PT[family] || FAMILY_PT.medium, S = 2, W = pt[0] * S, H = pt[1] * S;
+  const scene = skyScene(m.code, m.isDay), col = SKY[scene], rnd = rng(W * 31 + H + scene.length * 7);
+  const ctx = new DrawContext(); ctx.size = new Size(W, H); ctx.opaque = true; ctx.respectScreenScale = false;
+  const N = 40;
+  for (let i = 0; i &lt; N; i++) { ctx.setFillColor(new Color(mixHex(col[0], col[1], i / (N - 1)))); const y = Math.floor(i * H / N), y2 = Math.min(H, Math.floor((i + 1) * H / N) + 1); ctx.fillRect(new Rect(0, y, W, y2 - y)); }
+  const night = /night/.test(scene) || (!m.isDay &amp;&amp; /rain|snow|fog|storm/.test(scene));
+  if (scene === &quot;clear-day&quot; || scene === &quot;cloudy-day&quot;) { // 오른쪽 위 햇무리
+    for (let i = 6; i &gt;= 1; i--) { const r = H * 0.16 * i; ctx.setFillColor(new Color(&quot;#FFF4C2&quot;, 0.035)); ctx.fillEllipse(new Rect(W * 0.86 - r, -H * 0.12 - r, r * 2, r * 2)); }
+  }
+  if (scene === &quot;clear-night&quot; || scene === &quot;cloudy-night&quot;) { // 별
+    const n = scene === &quot;clear-night&quot; ? Math.round(W * H / 9000) : Math.round(W * H / 22000);
+    for (let i = 0; i &lt; n; i++) { const x = rnd() * W, y = Math.pow(rnd(), 1.4) * H * 0.8, r = (rnd() &lt; 0.15 ? 2.6 : 1.5) * S * 0.6;
+      ctx.setFillColor(new Color(&quot;#FFFFFF&quot;, 0.25 + rnd() * 0.5)); ctx.fillEllipse(new Rect(x - r / 2, y - r / 2, r, r)); }
+  }
+  const cloudy = { &quot;cloudy-day&quot;: [3, 0.10], &quot;cloudy-night&quot;: [3, 0.07], &quot;overcast-day&quot;: [5, 0.12], &quot;overcast-night&quot;: [5, 0.07], rain: [5, 0.08], snow: [4, 0.12], fog: [0, 0], storm: [5, 0.07] }[scene];
+  if (cloudy &amp;&amp; cloudy[0]) {
+    const hex = scene === &quot;storm&quot; ? &quot;#9AA3C0&quot; : night ? &quot;#C9D3E6&quot; : &quot;#FFFFFF&quot;;
+    const big = family === &quot;small&quot; ? 1.5 : family === &quot;medium&quot; ? 0.8 : 1;
+    for (let i = 0; i &lt; cloudy[0]; i++) softCloud(ctx, W * (-0.05 + 1.1 * ((i * 0.41 + rnd() * 0.2) % 1)), Math.min(W, H) * (0.06 + rnd() * 0.22), W * (0.34 + rnd() * 0.2) * big, cloudy[1], hex);
+  }
+  if (scene === &quot;rain&quot; || scene === &quot;storm&quot;) { // 빗줄기 (비스듬한 가는 선)
+    const n = Math.round(W * H / 5200);
+    ctx.setStrokeColor(new Color(&quot;#CFE3FF&quot;, 0.16)); ctx.setLineWidth(1.4 * S * 0.6);
+    const p = new Path();
+    for (let i = 0; i &lt; n; i++) { const x = rnd() * W * 1.1, y = rnd() * H, L = (10 + rnd() * 14) * S * 0.6; p.move(new Point(x, y)); p.addLine(new Point(x - L * 0.28, y + L)); }
+    ctx.addPath(p); ctx.strokePath();
+  }
+  if (scene === &quot;snow&quot;) {
+    const n = Math.round(W * H / 4200);
+    for (let i = 0; i &lt; n; i++) { const x = rnd() * W, y = rnd() * H, r = (1.4 + rnd() * 2.2) * S * 0.6; ctx.setFillColor(new Color(&quot;#FFFFFF&quot;, 0.25 + rnd() * 0.35)); ctx.fillEllipse(new Rect(x - r, y - r, r * 2, r * 2)); }
+  }
+  if (scene === &quot;fog&quot;) {
+    for (let i = 0; i &lt; 7; i++) { const y = H * (0.15 + i * 0.12), w = W * (0.7 + rnd() * 0.6), h = H * 0.07; ctx.setFillColor(new Color(&quot;#E6ECF2&quot;, 0.07 + rnd() * 0.05)); ctx.fillEllipse(new Rect(rnd() * W * 0.5 - w * 0.3, y, w, h)); }
+  }
+  for (let i = 0; i &lt; 12; i++) { const y = Math.floor(H * (0.55 + i * 0.0375)), y2 = i === 11 ? H : Math.floor(H * (0.55 + (i + 1) * 0.0375)); ctx.setFillColor(new Color(&quot;#000000&quot;, 0.012 * (i + 1))); ctx.fillRect(new Rect(0, y, W, y2 - y)); }
+  return ctx.getImage();
+}
+
+/* ---------------- 날씨 아이콘 (웹앱과 같은 색 이모지) ----------------
+   Scriptable의 SF Symbol은 한 가지 색(tintColor)만 돼서, 웹앱과 같은 이모지를 같은 크기의 그림으로 그려 넣습니다.
+   안개는 iOS 이모지가 흐릿한 회색 네모라 웹앱처럼 직접 그림. 잠금화면 위젯은 시스템이 단색으로 칠하므로 SF Symbol 유지. */
+const WMO_EMOJI = { 0: [&quot;☀️&quot;, &quot;🌙&quot;], 1: [&quot;🌤️&quot;, &quot;🌙&quot;], 2: [&quot;⛅&quot;, &quot;☁️&quot;], 3: [&quot;☁️&quot;], 45: [&quot;FOG&quot;], 48: [&quot;FOG&quot;],
+  51: [&quot;🌦️&quot;, &quot;🌧️&quot;], 53: [&quot;🌦️&quot;, &quot;🌧️&quot;], 55: [&quot;🌧️&quot;], 56: [&quot;🌧️&quot;], 57: [&quot;🌧️&quot;], 61: [&quot;🌦️&quot;, &quot;🌧️&quot;], 63: [&quot;🌧️&quot;], 65: [&quot;🌧️&quot;], 66: [&quot;🌧️&quot;], 67: [&quot;🌧️&quot;],
+  71: [&quot;🌨️&quot;], 73: [&quot;🌨️&quot;], 75: [&quot;❄️&quot;], 77: [&quot;🌨️&quot;], 80: [&quot;🌦️&quot;, &quot;🌧️&quot;], 81: [&quot;🌧️&quot;], 82: [&quot;⛈️&quot;], 85: [&quot;🌨️&quot;], 86: [&quot;❄️&quot;], 95: [&quot;⛈️&quot;], 96: [&quot;⛈️&quot;], 99: [&quot;⛈️&quot;] };
+function wxEmoji(code, isDay) { const e = WMO_EMOJI[Number(code)]; if (!e) return &quot;☁️&quot;; return (!isDay &amp;&amp; e[1]) ? e[1] : e[0]; }
+const ICON_CACHE = {};
+function iconImage(code, isDay, size) {
+  const e = wxEmoji(code, isDay), key = e + &quot;@&quot; + size;
+  if (ICON_CACHE[key]) return ICON_CACHE[key];
+  const S = 3, P = size * S, ctx = new DrawContext();
+  ctx.size = new Size(P, P); ctx.opaque = false; ctx.respectScreenScale = false;
+  if (e === &quot;FOG&quot;) {
+    ctx.setFillColor(new Color(&quot;#E3E9F1&quot;));
+    for (const [x, y, w, h] of [[0.16, 0.2, 0.42, 0.36], [0.36, 0.1, 0.46, 0.46], [0.6, 0.24, 0.3, 0.3], [0.2, 0.32, 0.66, 0.24]]) ctx.fillEllipse(new Rect(x * P, y * P, w * P, h * P));
+    ctx.setFillColor(new Color(&quot;#8A97A8&quot;));
+    for (const [x, y, w] of [[0.1, 0.64, 0.62], [0.26, 0.77, 0.64], [0.14, 0.9, 0.5]]) { const p = new Path(); p.addRoundedRect(new Rect(x * P, y * P - 0.04 * P, w * P, 0.08 * P), 0.04 * P, 0.04 * P); ctx.addPath(p); ctx.fillPath(); }
+  } else {
+    const f = P * 0.8; ctx.setFont(Font.systemFont(f)); ctx.setTextAlignedCenter();
+    ctx.drawTextInRect(e, new Rect(0, (P - f * 1.22) / 2, P, f * 1.22));
+  }
+  return (ICON_CACHE[key] = ctx.getImage());
+}
+
 function addText(stack, str, font, color, align) {
   const t = stack.addText(String(str));
   t.font = font;
@@ -615,7 +712,9 @@ function addSymbol(stack, name, size, color) {
 }
 function weatherIcon(stack, code, isDay, size) {
   const info = weatherInfo(code, isDay);
-  return addSymbol(stack, info.symbol, size, new Color(ICON_TINT[info.kind] || &quot;#FFFFFF&quot;));
+  if (/^accessory/.test(FAMILY)) return addSymbol(stack, info.symbol, size, WHITE);
+  try { const img = stack.addImage(iconImage(code, isDay, size)); img.imageSize = new Size(size, size); return img; }
+  catch (e) { return addSymbol(stack, info.symbol, size, new Color(ICON_TINT[info.kind] || &quot;#FFFFFF&quot;)); }
 }
 function pill(stack, text, hex, size) {
   const p = stack.addStack();
@@ -877,7 +976,8 @@ function accessoryWidget(w, m, family) {
 function buildWidget(m, family) {
   const w = new ListWidget();
   if (/^accessory/.test(family)) { accessoryWidget(w, m, family); return w; }
-  w.backgroundGradient = background(m);
+  w.backgroundGradient = background(m); // 그림이 실패해도 이 그라데이션이 남음
+  try { w.backgroundImage = backgroundImage(m, family); } catch (e) { console.log(&quot;배경 그림 실패: &quot; + e); }
   if (family === &quot;small&quot;) smallWidget(w, m);
   else if (family === &quot;large&quot; || family === &quot;extraLarge&quot;) largeWidget(w, m);
   else mediumWidget(w, m);

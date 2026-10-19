@@ -148,3 +148,60 @@ body.night .sheet-panel,body.rain .sheet-panel{--fg:#eef4ff}
 .favlist li.cur .nm::after{content:" ●";color:var(--accent);font-size:10px;vertical-align:middle}
 .skel{opacity:.5}
 .wi{width:1em;height:1em;vertical-align:-.12em;display:inline-block}
+
+/* ---------- 날씨 배경 (body[data-sky], app.js skyOf) ----------
+   그라데이션 + 가벼운 CSS 무늬(이미지·필터 없음): 별, 부드러운 구름, 빗줄기, 눈송이, 안개 띠 */
+body[data-sky]{background:linear-gradient(180deg,var(--bg1),var(--bg2)) fixed;background-color:var(--bg1)}
+body[data-sky]::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background-repeat:no-repeat}
+body[data-sky="clear-day"]{--bg1:#4f9bef;--bg2:#a8d1ff}
+body[data-sky="cloudy-day"]{--bg1:#6f97c4;--bg2:#b9cde2}
+body[data-sky="overcast-day"]{--bg1:#56667b;--bg2:#8493a6}
+body[data-sky="rain-day"]{--bg1:#36465b;--bg2:#56667c}
+body[data-sky="snow-day"]{--bg1:#9fb3cb;--bg2:#e1e9f2}
+body[data-sky="fog-day"]{--bg1:#9aa5b1;--bg2:#d3d9df}
+body[data-sky="clear-night"]{--bg1:#081130;--bg2:#1b2a56}
+body[data-sky="cloudy-night"]{--bg1:#141d30;--bg2:#2a3753}
+body[data-sky="overcast-night"]{--bg1:#151a23;--bg2:#2b333f}
+body[data-sky="rain-night"]{--bg1:#0f1622;--bg2:#222f42}
+body[data-sky="snow-night"]{--bg1:#232c3c;--bg2:#46536a}
+body[data-sky="fog-night"]{--bg1:#22272f;--bg2:#424a55}
+body[data-sky="storm"]{--bg1:#1c1d30;--bg2:#383b56}
+@media (prefers-color-scheme:dark){
+  body[data-sky="clear-day"]{--bg1:#0f2e5c;--bg2:#1d4f8e}
+  body[data-sky="cloudy-day"]{--bg1:#1d3049;--bg2:#33506f}
+  body[data-sky="overcast-day"]{--bg1:#1b222c;--bg2:#313c4a}
+  body[data-sky="snow-day"]{--bg1:#2b3648;--bg2:#4b5a72}
+  body[data-sky="fog-day"]{--bg1:#262c34;--bg2:#454e5a}
+}
+/* 밝은 하늘(낮 맑음·구름 조금·눈·안개)은 진한 글자, 나머지는 흰 글자(body.night/.rain 규칙) */
+/* 해: 오른쪽 위 햇무리 */
+body[data-sky="clear-day"]::before,body[data-sky="cloudy-day"]::before{background:
+  radial-gradient(circle at 88% -4%,rgba(255,246,200,.55),rgba(255,246,200,.18) 22%,transparent 46%)}
+/* 별 (맑은 밤 진하게, 구름 낀 밤 옅게) — 240px 타일에 점 여러 개, 아래로 갈수록 사라짐 */
+body[data-sky="clear-night"]::before,body[data-sky="cloudy-night"]::before{background-repeat:repeat;background-size:240px 240px,180px 180px,310px 310px;
+  background-image:
+  radial-gradient(1.4px 1.4px at 20px 30px,#fff 50%,transparent 60%),radial-gradient(1px 1px at 120px 80px,#fff 50%,transparent 60%),
+  radial-gradient(1.6px 1.6px at 200px 160px,#fff 50%,transparent 60%);
+  -webkit-mask-image:linear-gradient(#000 0,#000 35%,transparent 75%);mask-image:linear-gradient(#000 0,#000 35%,transparent 75%);opacity:.75}
+body[data-sky="cloudy-night"]::before{opacity:.35}
+/* 부드러운 구름: 큰 타원 방사형 그라데이션 몇 겹 */
+body[data-sky="cloudy-day"]::after,body[data-sky="cloudy-night"]::after,body[data-sky^="overcast"]::after,body[data-sky^="rain"]::after,body[data-sky="storm"]::after,body[data-sky^="snow"]::after{
+  content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background:
+  radial-gradient(ellipse 46% 9% at 18% 9%,var(--cloud) ,transparent 70%),radial-gradient(ellipse 38% 8% at 62% 5%,var(--cloud),transparent 70%),
+  radial-gradient(ellipse 52% 10% at 86% 17%,var(--cloud),transparent 70%),radial-gradient(ellipse 44% 8% at 38% 24%,var(--cloud2),transparent 70%),
+  radial-gradient(ellipse 60% 9% at 10% 33%,var(--cloud2),transparent 70%)}
+body[data-sky]{--cloud:rgba(255,255,255,.22);--cloud2:rgba(255,255,255,.12)}
+body[data-sky$="night"],body[data-sky="storm"]{--cloud:rgba(200,212,235,.11);--cloud2:rgba(200,212,235,.06)}
+body[data-sky^="overcast"],body[data-sky^="rain"]{--cloud:rgba(255,255,255,.12);--cloud2:rgba(255,255,255,.08)}
+/* 비·뇌우: 비스듬한 가는 빗줄기 */
+body[data-sky^="rain"]::before,body[data-sky="storm"]::before{background:
+  repeating-linear-gradient(104deg,transparent 0 22px,rgba(205,225,255,.09) 22px 23px,transparent 23px 47px),
+  repeating-linear-gradient(100deg,transparent 0 37px,rgba(205,225,255,.06) 37px 38px,transparent 38px 71px)}
+/* 눈송이 */
+body[data-sky^="snow"]::before{background-repeat:repeat;background-size:150px 150px,230px 230px;background-image:
+  radial-gradient(2.4px 2.4px at 30px 40px,rgba(255,255,255,.85) 50%,transparent 60%),radial-gradient(3px 3px at 150px 110px,rgba(255,255,255,.7) 50%,transparent 60%)}
+/* 안개: 가로 띠 */
+body[data-sky^="fog"]::before{background:repeating-linear-gradient(180deg,transparent 0 60px,rgba(255,255,255,.12) 90px,transparent 120px)}
+body[data-sky^="snow-day"],body[data-sky^="fog-day"]{--fg:#0f1b2d;--fg2:rgba(15,27,45,.74)}
+@media (prefers-color-scheme:dark){body[data-sky^="snow-day"],body[data-sky^="fog-day"]{--fg:#eaf1ff;--fg2:rgba(234,241,255,.8)}}
+@media (prefers-reduced-transparency:reduce){body[data-sky]::before,body[data-sky]::after{display:none}}
