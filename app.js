@@ -302,7 +302,7 @@ async function fetchWeather(l) {
 /* ---- 위치명: 국내는 브이월드(국토교통부) 역지오코딩 → 행정동, 해외·실패 시 BigDataCloud ---- */
 // 브이월드 키는 서비스 URL(https://rhffkwl.github.io/weather/)에 묶인 브라우저용 키입니다.
 const VWORLD_KEY = '532F6A41-960A-47CD-ADAE-0AA007AD1C37';
-const VW_TIMEOUT = 4500;
+const VW_TRY_MS = [3000, 2000], VW_RETRY_GAP = 1000; // 1차 3초 → 1초 쉬고 2차 2초: 최악 ~6초 뒤 BigDataCloud
 const vwMem = new Map(); // 브이월드 약관상 결과를 저장하지 않으므로 세션 메모리에만 둡니다 (~100m 격자)
 // structure → { name: '용산구 한강로동', sub: '서울특별시, 대한민국' }
 function vwLabel(st) {
@@ -316,21 +316,30 @@ function vwLabel(st) {
   return { name, sub };
 }
 // CORS 헤더가 없어 fetch는 막힘 → JSONP (format=json&callback=…)
-function vworldName(lat, lon) {
+async function vworldName(lat, lon) {
   const k = (+lat).toFixed(3) + ',' + (+lon).toFixed(3);
-  if (vwMem.has(k)) return Promise.resolve(vwMem.get(k));
+  if (vwMem.has(k)) return vwMem.get(k);
+  let last;
+  for (let i = 0; i < VW_TRY_MS.length; i++) {
+    if (i) await new Promise(r => setTimeout(r, VW_RETRY_GAP));
+    try { const v = await vworldOnce(lat, lon, VW_TRY_MS[i]); vwMem.set(k, v); return v; }
+    catch (e) { last = e; if (/NOT_FOUND|empty/.test(e.message)) break; } // 결과 없음(바다 등)은 다시 물어도 같음
+  }
+  throw last;
+}
+function vworldOnce(lat, lon, ms) {
   return new Promise((resolve, reject) => {
     const cb = '__vw' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     const s = document.createElement('script');
     const done = (err, v) => { clearTimeout(t); window[cb] = () => {}; setTimeout(() => { try { delete window[cb]; } catch {} }, 30000); s.remove(); err ? reject(err) : resolve(v); };
-    const t = setTimeout(() => done(new Error('vworld timeout')), VW_TIMEOUT);
+    const t = setTimeout(() => done(new Error('vworld timeout')), ms);
     window[cb] = j => {
       const r = j && j.response;
       if (!r || r.status !== 'OK') return done(new Error('vworld ' + (r ? r.status + ' ' + ((r.error && r.error.code) || '') : 'bad response')));
       const it = (r.result || []).find(x => x.structure && (x.structure.level4A || x.structure.level4L)) || (r.result || [])[0];
       const v = it && vwLabel(it.structure);
       if (!v) return done(new Error('vworld empty'));
-      v.src = 'vworld'; vwMem.set(k, v); done(null, v);
+      v.src = 'vworld'; done(null, v);
     };
     s.onerror = () => done(new Error('vworld load error'));
     s.referrerPolicy = 'no-referrer-when-downgrade'; // 등록한 서비스 URL과 같은 전체 주소를 Referer로

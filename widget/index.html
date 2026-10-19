@@ -347,11 +347,21 @@ function vwLabel(st) {
   const name = [gu, dong].filter(Boolean).join(&quot; &quot;);
   return name ? { name } : null;
 }
+// 1차 3초 → 1초 쉬고 2차 2초 (최악 ~6초 뒤 iOS 주소로)
 async function vworldName(lat, lon) {
+  let last;
+  for (const [i, sec] of [3, 2].entries()) {
+    if (i) await sleep(1);
+    try { return await vworldOnce(lat, lon, sec); }
+    catch (e) { last = e; if (/NOT_FOUND|결과 없음/.test(e.message)) break; }
+  }
+  throw last;
+}
+async function vworldOnce(lat, lon, sec) {
   const req = new Request(&quot;https://api.vworld.kr/req/address?&quot; + qs({ service: &quot;address&quot;, request: &quot;getAddress&quot;, version: &quot;2.0&quot;, crs: &quot;epsg:4326&quot;,
     point: lon.toFixed(6) + &quot;,&quot; + lat.toFixed(6), type: &quot;both&quot;, zipcode: &quot;false&quot;, format: &quot;json&quot;, errorFormat: &quot;json&quot;, key: VWORLD_KEY,
     domain: &quot;https://rhffkwl.github.io/weather/&quot; }));
-  req.timeoutInterval = 6;
+  req.timeoutInterval = sec;
   req.headers = { Referer: &quot;https://rhffkwl.github.io/weather/&quot; };
   const j = await req.loadJSON();
   const r = j &amp;&amp; j.response;
@@ -406,7 +416,7 @@ async function resolveLocation(cache) {
     if (!l || !isNum(l.latitude)) throw new Error(&quot;위치 없음&quot;);
     let name = &quot;현재 위치&quot;, nameSrc = &quot;&quot;;
     if (kmaInKorea(l.latitude, l.longitude)) {
-      try { name = await withTimeout(vworldName(l.latitude, l.longitude), 7, &quot;주소&quot;); nameSrc = &quot;vworld&quot;; } catch (e) { console.log(&quot;VWorld 실패, iOS 주소 사용: &quot; + e.message); }
+      try { name = await withTimeout(vworldName(l.latitude, l.longitude), 6.5, &quot;주소&quot;); nameSrc = &quot;vworld&quot;; } catch (e) { console.log(&quot;VWorld 실패, iOS 주소 사용: &quot; + e.message); }
     }
     if (!nameSrc) try {
       const rg = await withTimeout(Location.reverseGeocode(l.latitude, l.longitude, &quot;ko_KR&quot;), 5, &quot;주소&quot;);
