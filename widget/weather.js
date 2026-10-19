@@ -14,6 +14,7 @@
  *   "37.57,126.98" 처럼 위도,경도를 직접 넣어도 됩니다.
  * - 웹앱: https://rhffkwl.github.io/weather/
  */
+const WIDGET_VERSION = "2026-10-19b"; // 앱에서 실행하면 로그에 출력됩니다
 
 const CONFIG = {
   appURL: "https://rhffkwl.github.io/weather/",
@@ -21,6 +22,7 @@ const CONFIG = {
   kmaBaseURL: "https://rhffkwl.github.io/weather/data/kma/",
   fallback: { name: "서울", lat: 37.5665, lon: 126.978 },
   refreshMinutes: 30,
+  budgetSeconds: 22,    // 위젯 한 번 실행에 쓰는 최대 시간(iOS가 오래 걸리는 위젯을 강제 종료하면 화면이 멈춘 채 남음)
   locationTimeout: 8,   // 초
   requestTimeout: 12,   // 초
   previewSize: "medium", // 앱에서 실행할 때 미리보기 크기: small | medium | large
@@ -130,7 +132,7 @@ function akFresh(x, now) { return !!(x && now - x.t <= AK_STALE_MS); }
 function akHour(x) { return x && x.time ? Number(x.time.slice(11, 13)) + "시" : ""; }
 
 /* KMA:BEGIN — 기상청 국내 예보 (data/kma/*.json, GitHub Actions가 매시 갱신). 웹앱과 위젯에 같은 코드가 들어갑니다 (scripts/kma-client.js). */
-const KMA_MAX_KM = 25, KMA_NOW_MAX_MS = 3 * 3600e3, KMA_VIL_MAX_MS = 12 * 3600e3, KMA_MID_MAX_MS = 36 * 3600e3;
+const KMA_MAX_KM = 25, KMA_NOW_MAX_MS = 3 * 3600e3, KMA_NOW_PREFER_MS = 75 * 60e3, KMA_VIL_MAX_MS = 12 * 3600e3, KMA_MID_MAX_MS = 36 * 3600e3;
 function kmaInKorea(lat, lon) { return lat > 32.8 && lat < 38.9 && lon > 124 && lon < 132; }
 function kmaKm(a, b, c, d) { const r = Math.PI / 180, x = Math.sin((c - a) * r / 2), y = Math.sin((d - b) * r / 2); return 12742 * Math.asin(Math.sqrt(x * x + Math.cos(a * r) * Math.cos(c * r) * y * y)); }
 // "YYYYMMDDHH[MM]" (KST) → epoch ms
@@ -199,6 +201,12 @@ function kmaApply(f, k, nowMs) {
     if (r && typeof r[0] === "number" && nowMs - kmaTime(obsBase) <= KMA_NOW_MAX_MS) obs = r;
   }
   if (!vil && !obs) return null;
+  // 실황이 75분 넘게 지났고 단기예보에 지금 시각이 있으면 예보 쪽이 더 맞음 (예: 18:44에 17시 실황을 '지금'으로 보이지 않게)
+  if (obs && vil && nowMs - kmaTime(obsBase) > KMA_NOW_PREFER_MS) {
+    const nowKey = new Date(nowMs + 9 * 3600e3).toISOString().slice(0, 13).replace(/[-T]/g, "");
+    const t0 = kmaTime(vil.t0);
+    if (vil.h.some(r => new Date(t0 + r[0] * 3600e3 + 9 * 3600e3).toISOString().slice(0, 13).replace(/[-T]/g, "") === nowKey)) obs = null;
+  }
   // 단기예보 시간별 표: "YYYYMMDDHH" → {tmp, pop, sky, pty, mm, h}
   const hr = {};
   if (vil) {
@@ -286,11 +294,14 @@ function vwLabel(st) {
   const name = [gu, dong].filter(Boolean).join(" ");
   return name ? { name } : null;
 }
-// 1차 3초 → 1초 쉬고 2차 2초 (최악 ~6초 뒤 iOS 주소로)
+// 위젯은 백그라운드라 기다려도 화면이 멈추지 않음: 날씨 받기와 동시에 진행하고, 1차 6초 → 1초 쉬고 2차 5초.
+// (셀룰러·위젯 확장의 첫 연결은 DNS+TLS만 1~2초 걸릴 수 있어 웹앱의 3초/2초보다 넉넉하게)
+const VW_TRY_SEC = [6, 5], VW_GAP_SEC = 1;
 async function vworldName(lat, lon) {
   let last;
-  for (const [i, sec] of [3, 2].entries()) {
-    if (i) await sleep(1);
+  for (let i = 0; i < VW_TRY_SEC.length; i++) {
+    const sec = VW_TRY_SEC[i];
+    if (i) await sleep(VW_GAP_SEC);
     try { return await vworldOnce(lat, lon, sec); }
     catch (e) { last = e; if (/NOT_FOUND|결과 없음/.test(e.message)) break; }
   }
@@ -305,10 +316,17 @@ async function vworldOnce(lat, lon, sec) {
   const j = await req.loadJSON();
   const r = j && j.response;
   if (!r || r.status !== "OK") throw new Error("vworld " + (r ? r.status : "응답 없음"));
-  const it = (r.result || []).find(x => x.structure && (x.structure.level4A || x.structure.level4L)) || (r.result || [])[0];
-  const v = it && vwLabel(it.structure);
+  const v = vwPick(r.result);
   if (!v) throw new Error("vworld 결과 없음");
   return v.name;
+}
+// 지번(parcel) 결과를 우선. 도로명(road) 결과는 level3에 법정동, level4L에 도로명이 들어 있어 시·구 + 행정동만 씀
+function vwPick(list) {
+  const rs = (list || []).filter(x => x && x.structure);
+  const p = rs.find(x => x.type === "parcel" && (x.structure.level4A || x.structure.level4L));
+  if (p) return vwLabel(p.structure);
+  const rd = rs.find(x => x.structure.level4A);
+  return rd ? vwLabel(Object.assign({}, rd.structure, { level3: "", level4L: "" })) : null;
 }
 const FC_RANK = { PPLC: 6, PPLA: 5, PPLA2: 4, PPLA3: 3, PPLA4: 2, PPL: 1, ADM1: 1, ADM2: 1 };
 async function geocode(q) {
@@ -337,6 +355,21 @@ async function geocode(q) {
   return { name: q, fullName: r.name, admin1: r.admin1 || "", lat: r.latitude, lon: r.longitude };
 }
 
+// 이름 찾기: 국내는 브이월드와 iOS 주소를 동시에 물어 브이월드를 우선. 브이월드 이름은 약관상 저장하지 않으므로
+// 캐시 파일에는 iOS 이름(iosName)만 남깁니다.
+async function resolveName(lat, lon) {
+  const ios = withTimeout(Location.reverseGeocode(lat, lon, "ko_KR"), 8, "iOS 주소")
+    .then(rg => { const a = rg && rg[0]; return a ? (a.subLocality || a.locality || a.administrativeArea || null) : null; })
+    .catch(() => null);
+  let vw = null, vwErr = "";
+  if (kmaInKorea(lat, lon)) {
+    try { vw = await withTimeout(vworldName(lat, lon), 13, "브이월드"); } catch (e) { vwErr = e.message; }
+  }
+  const iosName = await ios;
+  const out = vw ? { name: vw, nameSrc: "vworld", iosName } : iosName ? { name: iosName, nameSrc: "ios", iosName } : { name: "현재 위치", nameSrc: "", iosName: null };
+  out.vwErr = vwErr;
+  return out;
+}
 async function resolveLocation(cache) {
   if (PARAM) {
     const m = PARAM.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
@@ -350,21 +383,14 @@ async function resolveLocation(cache) {
     return Object.assign({}, r, { source: "param" });
   }
   try {
-    Location.setAccuracyToThreeKilometers();
+    Location.setAccuracyToHundredMeters(); // 동 이름까지 맞추려면 3km 정확도로는 옆 동이 나올 수 있음
     const l = await withTimeout(Location.current(), CONFIG.locationTimeout, "위치");
     if (!l || !isNum(l.latitude)) throw new Error("위치 없음");
-    let name = "현재 위치", nameSrc = "";
-    if (kmaInKorea(l.latitude, l.longitude)) {
-      try { name = await withTimeout(vworldName(l.latitude, l.longitude), 6.5, "주소"); nameSrc = "vworld"; } catch (e) { console.log("VWorld 실패, iOS 주소 사용: " + e.message); }
-    }
-    if (!nameSrc) try {
-      const rg = await withTimeout(Location.reverseGeocode(l.latitude, l.longitude, "ko_KR"), 5, "주소");
-      const a = rg && rg[0];
-      if (a) { name = a.subLocality || a.locality || a.administrativeArea || name; nameSrc = "ios"; }
-    } catch (e) {}
-    return { name, nameSrc, lat: l.latitude, lon: l.longitude, source: "gps" };
+    const loc = { name: "현재 위치", nameSrc: "", lat: l.latitude, lon: l.longitude, source: "gps" };
+    loc.namePromise = resolveName(loc.lat, loc.lon); // 날씨 받는 동안 함께 진행
+    return loc;
   } catch (e) {
-    if (cache && cache.loc && /^gps/.test(cache.loc.source)) return Object.assign({}, cache.loc, { source: "gps-cached" });
+    if (cache && cache.loc && /^gps/.test(cache.loc.source)) return Object.assign({}, cache.loc, { source: "gps-cached" }); // 캐시엔 iOS 이름만 있음
     return Object.assign({}, CONFIG.fallback, { source: "fallback" });
   }
 }
@@ -805,24 +831,39 @@ function errorWidget(err, family) {
 }
 
 /* ---------------- 실행 ---------------- */
+const T0 = Date.now();
+const left = () => Math.max(1, CONFIG.budgetSeconds - (Date.now() - T0) / 1000);
 async function main() {
   const cacheFile = fm.joinPath(DIR, "cache-" + (PARAM ? "p" + hashStr(PARAM) : "here") + ".json");
   const cache = readJSON(cacheFile);
   let model = null, err = null;
   try {
     const loc = await resolveLocation(cache);
-    const { fc, aq, ak } = await fetchWeather(loc);
+    const np = loc.namePromise; delete loc.namePromise;
+    const { fc, aq, ak } = await withTimeout(fetchWeather(loc), Math.max(4, left() - 1), "날씨");
+    if (np) {
+      // 날씨가 먼저 끝나면 이름은 남은 시간만큼만 기다림 → 못 받으면 iOS 이름/이전 이름
+      const n = await Promise.race([np, sleep(left()).then(() => null)]) || { name: (cache && cache.loc && cache.loc.name) || "현재 위치", nameSrc: "", iosName: null, vwErr: "시간 초과" };
+      loc.name = n.name; loc.nameSrc = n.nameSrc;
+      writeJSON(fm.joinPath(DIR, "last-name.json"), { v: WIDGET_VERSION, at: seoulISO(Date.now()), nameSrc: n.nameSrc, vwErr: n.vwErr || "" }); // 진단용(이름 자체는 저장 안 함)
+      console.log(`[${WIDGET_VERSION}] 위치 이름 출처: ${n.nameSrc || "없음"}${n.vwErr ? " · 브이월드 실패: " + n.vwErr : ""}`);
+      loc.iosName = n.iosName;
+    }
     const sameLoc = cache && cache.loc && Math.abs(cache.loc.lat - loc.lat) < 0.05 && Math.abs(cache.loc.lon - loc.lon) < 0.05;
     const raw = { loc, fc, aq: aq || (sameLoc ? cache.aq : null), ak: ak || (sameLoc ? cache.ak : null), fetchedAt: Date.now() };
-    writeJSON(cacheFile, raw);
     model = buildModel(raw, false);
+    // 브이월드 이름은 파일에 남기지 않음(약관): 저장본에는 iOS 이름(없으면 '현재 위치')
+    const keep = loc.nameSrc === "vworld" ? Object.assign({}, loc, { name: loc.iosName || "현재 위치", nameSrc: loc.iosName ? "ios" : "" }) : loc;
+    writeJSON(cacheFile, Object.assign({}, raw, { loc: keep }));
   } catch (e) {
     err = e;
     if (cache && cache.fc && !(e instanceof NotFoundError)) {
       try { model = buildModel(cache, true); } catch (e2) { model = null; }
     }
   }
-  const w = model ? buildWidget(model, FAMILY) : errorWidget(err, FAMILY);
+  let w;
+  try { w = model ? buildWidget(model, FAMILY) : errorWidget(err, FAMILY); }
+  catch (e) { console.log("위젯 그리기 실패: " + e); w = errorWidget(e, FAMILY); }
   w.url = CONFIG.appURL;
   w.refreshAfterDate = new Date(Date.now() + CONFIG.refreshMinutes * 60 * 1000);
   if (config.runsInWidget) {
@@ -837,4 +878,9 @@ async function main() {
   Script.complete();
 }
 
-await main();
+try { await main(); }
+catch (e) { // 어떤 오류든 위젯을 꼭 넘겨야 iOS가 refreshAfterDate대로 다시 실행함
+  console.log("main 실패: " + e);
+  const w = errorWidget(e, FAMILY); w.url = CONFIG.appURL; w.refreshAfterDate = new Date(Date.now() + 15 * 60 * 1000);
+  if (config.runsInWidget) Script.setWidget(w); Script.complete();
+}

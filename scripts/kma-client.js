@@ -1,5 +1,5 @@
 /* KMA:BEGIN — 기상청 국내 예보 (data/kma/*.json, GitHub Actions가 매시 갱신). 웹앱과 위젯에 같은 코드가 들어갑니다 (scripts/kma-client.js). */
-const KMA_MAX_KM = 25, KMA_NOW_MAX_MS = 3 * 3600e3, KMA_VIL_MAX_MS = 12 * 3600e3, KMA_MID_MAX_MS = 36 * 3600e3;
+const KMA_MAX_KM = 25, KMA_NOW_MAX_MS = 3 * 3600e3, KMA_NOW_PREFER_MS = 75 * 60e3, KMA_VIL_MAX_MS = 12 * 3600e3, KMA_MID_MAX_MS = 36 * 3600e3;
 function kmaInKorea(lat, lon) { return lat > 32.8 && lat < 38.9 && lon > 124 && lon < 132; }
 function kmaKm(a, b, c, d) { const r = Math.PI / 180, x = Math.sin((c - a) * r / 2), y = Math.sin((d - b) * r / 2); return 12742 * Math.asin(Math.sqrt(x * x + Math.cos(a * r) * Math.cos(c * r) * y * y)); }
 // "YYYYMMDDHH[MM]" (KST) → epoch ms
@@ -68,6 +68,12 @@ function kmaApply(f, k, nowMs) {
     if (r && typeof r[0] === "number" && nowMs - kmaTime(obsBase) <= KMA_NOW_MAX_MS) obs = r;
   }
   if (!vil && !obs) return null;
+  // 실황이 75분 넘게 지났고 단기예보에 지금 시각이 있으면 예보 쪽이 더 맞음 (예: 18:44에 17시 실황을 '지금'으로 보이지 않게)
+  if (obs && vil && nowMs - kmaTime(obsBase) > KMA_NOW_PREFER_MS) {
+    const nowKey = new Date(nowMs + 9 * 3600e3).toISOString().slice(0, 13).replace(/[-T]/g, "");
+    const t0 = kmaTime(vil.t0);
+    if (vil.h.some(r => new Date(t0 + r[0] * 3600e3 + 9 * 3600e3).toISOString().slice(0, 13).replace(/[-T]/g, "") === nowKey)) obs = null;
+  }
   // 단기예보 시간별 표: "YYYYMMDDHH" → {tmp, pop, sky, pty, mm, h}
   const hr = {};
   if (vil) {

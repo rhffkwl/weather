@@ -1,5 +1,5 @@
 /* 하늘 날씨 service worker: offline app shell + last API responses */
-const VERSION = 'v8';
+const VERSION = 'v9';
 const SHELL = `shell-${VERSION}`, DATA = 'data-v1';
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.json', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png'];
 const API_HOSTS = ['api.open-meteo.com', 'air-quality-api.open-meteo.com', 'geocoding-api.open-meteo.com', 'api.bigdatacloud.net'];
@@ -31,11 +31,15 @@ self.addEventListener('fetch', e => {
     return;
   }
   if (url.origin === self.location.origin) {
-    // stale-while-revalidate for the app shell
+    // 앱 코드(index.html·app.js…)는 네트워크 우선(3초) → 실패/지연 시 저장본. 예전엔 저장본 우선이라
+    // 홈 화면 앱이 업데이트를 놓치고 옛 코드(기상청·어제 배지 없음)를 계속 쓰는 일이 있었음.
     e.respondWith(caches.open(SHELL).then(async c => {
+      const net = fetch(req, { cache: 'no-cache' }).then(res => { if (res.ok) c.put(req, res.clone()); return res; });
+      const timeout = new Promise(r => setTimeout(r, 3000, null));
+      const first = await Promise.race([net.catch(() => null), timeout]);
+      if (first) return first;
       const hit = await c.match(req, { ignoreSearch: true }) || (req.mode === 'navigate' ? await c.match('index.html') : null);
-      const net = fetch(req).then(res => { if (res.ok) c.put(req, res.clone()); return res; }).catch(() => null);
-      return hit || (await net) || (req.mode === 'navigate' ? c.match('index.html') : Response.error());
+      return hit || net.catch(() => (req.mode === 'navigate' ? c.match('index.html') : Response.error()));
     }));
   }
 });

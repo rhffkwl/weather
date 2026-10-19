@@ -73,7 +73,7 @@ function akFresh(x, now) { return !!(x && now - x.t <= AK_STALE_MS); }
 function akHour(x) { return x && x.time ? Number(x.time.slice(11, 13)) + "시" : ""; }
 
 /* KMA:BEGIN — 기상청 국내 예보 (data/kma/*.json, GitHub Actions가 매시 갱신). 웹앱과 위젯에 같은 코드가 들어갑니다 (scripts/kma-client.js). */
-const KMA_MAX_KM = 25, KMA_NOW_MAX_MS = 3 * 3600e3, KMA_VIL_MAX_MS = 12 * 3600e3, KMA_MID_MAX_MS = 36 * 3600e3;
+const KMA_MAX_KM = 25, KMA_NOW_MAX_MS = 3 * 3600e3, KMA_NOW_PREFER_MS = 75 * 60e3, KMA_VIL_MAX_MS = 12 * 3600e3, KMA_MID_MAX_MS = 36 * 3600e3;
 function kmaInKorea(lat, lon) { return lat > 32.8 && lat < 38.9 && lon > 124 && lon < 132; }
 function kmaKm(a, b, c, d) { const r = Math.PI / 180, x = Math.sin((c - a) * r / 2), y = Math.sin((d - b) * r / 2); return 12742 * Math.asin(Math.sqrt(x * x + Math.cos(a * r) * Math.cos(c * r) * y * y)); }
 // "YYYYMMDDHH[MM]" (KST) → epoch ms
@@ -142,6 +142,12 @@ function kmaApply(f, k, nowMs) {
     if (r && typeof r[0] === "number" && nowMs - kmaTime(obsBase) <= KMA_NOW_MAX_MS) obs = r;
   }
   if (!vil && !obs) return null;
+  // 실황이 75분 넘게 지났고 단기예보에 지금 시각이 있으면 예보 쪽이 더 맞음 (예: 18:44에 17시 실황을 '지금'으로 보이지 않게)
+  if (obs && vil && nowMs - kmaTime(obsBase) > KMA_NOW_PREFER_MS) {
+    const nowKey = new Date(nowMs + 9 * 3600e3).toISOString().slice(0, 13).replace(/[-T]/g, "");
+    const t0 = kmaTime(vil.t0);
+    if (vil.h.some(r => new Date(t0 + r[0] * 3600e3 + 9 * 3600e3).toISOString().slice(0, 13).replace(/[-T]/g, "") === nowKey)) obs = null;
+  }
   // 단기예보 시간별 표: "YYYYMMDDHH" → {tmp, pop, sky, pty, mm, h}
   const hr = {};
   if (vil) {
@@ -376,8 +382,10 @@ async function resolveHere() {
     const lat = +c.latitude.toFixed(4), lon = +c.longitude.toFixed(4);
     const prev = state.here;
     // 1km 안에서는 이전 이름을 다시 씀. 단, 국내인데 브이월드 이름이 아니면(예전 이름·일시 실패) 30분마다 다시 시도
+    // (prev.src === 'vworld' 은 이번 세션 메모리에서만 생김. 저장본은 'stored'라 국내면 다시 물어봄)
     const near = prev && !prev.fallback && Math.abs(prev.lat - lat) < 0.01 && Math.abs(prev.lon - lon) < 0.01;
-    const wantVw = kmaInKorea(lat, lon) && !(prev && prev.src === 'vworld') && !(prev && prev.vwTry && Date.now() - prev.vwTry < 30 * 60e3);
+    const moved = !prev || Math.abs(prev.lat - lat) > 0.002 || Math.abs(prev.lon - lon) > 0.002; // ~200m: 동 경계가 촘촘해서
+    const wantVw = kmaInKorea(lat, lon) && (!(prev && prev.src === 'vworld') || moved) && !(prev && prev.src !== 'vworld' && prev.vwTry && Date.now() - prev.vwTry < 30 * 60e3);
     let nm = near && !wantVw ? prev : null;
     let vwTry = prev && near ? prev.vwTry : 0;
     if (!nm) { nm = await reverseName(lat, lon); if (kmaInKorea(lat, lon) && nm.src !== 'vworld') vwTry = Date.now(); }
@@ -388,7 +396,9 @@ async function resolveHere() {
       toast(e && e.code === 1 ? '위치 권한이 없어 서울 날씨를 보여드려요' : '위치를 확인할 수 없어 서울 날씨를 보여드려요');
     }
   }
-  LS.set('wx:here', state.here);
+  // 브이월드 이름은 약관상 저장하지 않음: 기기에는 좌표만 남기고, 다음 실행 때 다시 물어봄(같은 세션 안에서는 vwMem)
+  const h = state.here;
+  LS.set('wx:here', h && h.src === 'vworld' ? { ...h, name: '현재 위치', sub: '', src: 'stored' } : h);
 }
 
 /* ---------------- rendering ---------------- */
@@ -737,7 +747,15 @@ function boot() {
   if (!locations().some(l => l.id === state.activeId)) state.activeId = 'here';
   bind(); renderTabs();
   load({ relocate: state.activeId === 'here', force: false });
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW', e));
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    const hadSW = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+      // 홈 화면 앱은 다시 열 때 새로 고침 없이 이어지므로, 보일 때마다 새 버전이 있는지 확인
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+    }).catch(e => console.warn('SW', e));
+    let reloaded = false; // 새 서비스 워커가 넘겨받으면(=앱 업데이트) 한 번만 새로 고침
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadSW && !reloaded) { reloaded = true; location.reload(); } });
+  }
 }
 boot();
 })();
