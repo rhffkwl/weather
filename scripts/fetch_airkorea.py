@@ -34,13 +34,20 @@ class ApiError(Exception):
     pass
 
 
+DEADLINE = time.time() + float(os.environ.get("AIRKOREA_BUDGET_S", "240"))  # whole run budget; next cron slot retries
+STALE_H = 3
+
+
 def call(path, params, tries=4):
     q = urllib.parse.urlencode({"serviceKey": KEY, "returnType": "json", **params})
     url = BASE + path + "?" + q
     last = None
     for i in range(tries):
+        left = DEADLINE - time.time()
+        if left < 10:
+            last = last or ApiError("network: time budget exhausted"); break
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "rhffkwl-weather/1.0"}), timeout=75) as r:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "rhffkwl-weather/1.0"}), timeout=min(40, left)) as r:
                 body = r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")
@@ -50,7 +57,7 @@ def call(path, params, tries=4):
             time.sleep(3 * (i + 1)); continue
         except Exception as e:  # network
             last = ApiError(f"network: {e}")
-            time.sleep(10 * (i + 1)); continue
+            time.sleep(min(5 * (i + 1), max(0, DEADLINE - time.time() - 10))); continue
         try:
             j = json.loads(body)
         except ValueError:
@@ -204,18 +211,45 @@ def main():
         log("no usable rows; not writing"); return 1
     out.sort(key=lambda x: (x[1], x[0]))
     times = sorted({x[6] for x in out if x[6]})
+    cnt = {}
+    for x in out:
+        if x[6]: cnt[x[6]] = cnt.get(x[6], 0) + 1
+    typical = max(cnt, key=lambda t: (cnt[t], t)) if cnt else None  # 대부분 측정소의 시각 (일부만 먼저 올라온 시각이 아님)
     doc = {
         "source": "에어코리아 (한국환경공단)",
         "note": "실시간 측정 자료는 확정되지 않은 값으로 실제 대기오염도와 차이가 있을 수 있습니다.",
-        "dataTime": times[-1] if times else None,
+        "dataTime": typical,
+        "latestTime": times[-1] if times else None,
         "tz": "Asia/Seoul",
         "fields": ["name", "sido", "lat", "lon", "pm10", "pm25", "dataTime", "pm10Grade1h", "pm25Grade1h", "net"],
         "stations": out,
     }
     write_json(OUT, doc)
-    log("wrote", len(out), "stations, latest dataTime", doc["dataTime"])
+    log("wrote", len(out), "stations, typical dataTime", doc["dataTime"], "(%d stations), latest" % cnt.get(typical, 0), doc["latestTime"])
+    return 0
+
+
+def check(now=None):
+    """Fail (exit 3) when most stations' data is older than STALE_H hours — the apps then fall back to the model."""
+    doc = load_json(OUT, {})
+    try:
+        i = doc["fields"].index("dataTime"); ts = [r[i] for r in doc["stations"] if r[i]]
+    except (KeyError, ValueError, TypeError):
+        log("::error::data/airkorea.json unreadable"); return 3
+    cnt = {}
+    for t in ts: cnt[t] = cnt.get(t, 0) + 1
+    if not cnt:
+        log("::error::no station times"); return 3
+    typical = max(cnt, key=lambda t: (cnt[t], t))
+    kst = timezone(timedelta(hours=9))
+    now = now or datetime.now(kst)
+    age = (now - datetime.strptime(typical, "%Y-%m-%d %H:%M").replace(tzinfo=kst)).total_seconds() / 3600
+    log("freshness: %d/%d stations at %s, age %.1f h" % (cnt[typical], len(ts), typical, age))
+    if age > STALE_H:
+        log("::error::AirKorea data is %.1f h old (> %d h): widget/web show the Open-Meteo model instead of 실측. Check the fetch step log." % (age, STALE_H))
+        return 3
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(check() if "--check" in sys.argv else main())
