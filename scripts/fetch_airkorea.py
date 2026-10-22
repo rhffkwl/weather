@@ -243,7 +243,10 @@ def check(now=None):
     typical = max(cnt, key=lambda t: (cnt[t], t))
     kst = timezone(timedelta(hours=9))
     now = now or datetime.now(kst)
-    age = (now - datetime.strptime(typical, "%Y-%m-%d %H:%M").replace(tzinfo=kst)).total_seconds() / 3600
+    d, hm = typical.split(" ")  # 에어코리아는 자정을 "24:00"으로 표기
+    h, m = map(int, hm.split(":"))
+    t0 = datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=kst) + timedelta(hours=h, minutes=m)
+    age = (now - t0).total_seconds() / 3600
     log("freshness: %d/%d stations at %s, age %.1f h" % (cnt[typical], len(ts), typical, age))
     if age > STALE_H:
         log("::error::AirKorea data is %.1f h old (> %d h): widget/web show the Open-Meteo model instead of 실측. Check the fetch step log." % (age, STALE_H))
