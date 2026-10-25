@@ -432,15 +432,32 @@ function toast(msg, ms = 2600) {
 }
 function tabLabel(l) {
   if (l.id === 'here') return '📍 ' + (l.name && !l.fallback ? l.name : '현재 위치');
-  if (!state.favs.some(f => f.id === l.id)) return '🔍 ' + l.name;
-  return '★';  // 즐겨찾기는 별만 (이름은 본문에 이미 있음)
+  return '🔍 ' + l.name;
+}
+function lastFav() {
+  const id = LS.get('wx:lastFav', null);
+  return state.favs.find(f => f.id === id) || state.favs[0] || null;
 }
 function renderTabs() {
   const nav = $('#tabs');
-  nav.innerHTML = locations().map(l => {
-    const d = cacheGet(l); const t = d && d.f && d.f.current ? r0(d.f.current.temperature_2m) + '°' : '';
-    return `<button class="tab" role="tab" data-id="${esc(l.id)}" aria-selected="${l.id === state.activeId}">${esc(tabLabel(l))}${t ? ` <span class="t">${t}</span>` : ''}</button>`;
-  }).join('');
+  const bits = [];
+  const push = (id, label, selected, l) => {
+    const d = l && cacheGet(l);
+    const t = d && d.f && d.f.current ? r0(d.f.current.temperature_2m) + '°' : '';
+    bits.push(`<button class="tab" role="tab" data-id="${esc(id)}" aria-selected="${!!selected}">${esc(label)}${t ? ` <span class="t">${t}</span>` : ''}</button>`);
+  };
+  const here = { id: 'here', ...(state.here || {}) };
+  push('here', tabLabel(here), state.activeId === 'here', here);
+  // 즐겨찾기는 상단에 칸 하나만 — 목록은 옆 메뉴에서 고름
+  if (state.favs.length) {
+    const onFav = state.favs.some(f => f.id === state.activeId);
+    const f = onFav ? state.favs.find(x => x.id === state.activeId) : lastFav();
+    push('__fav__', '★', onFav, f);
+  }
+  if (state.temp && !state.favs.some(f => f.id === state.temp.id)) {
+    push(state.temp.id, tabLabel(state.temp), state.activeId === state.temp.id, state.temp);
+  }
+  nav.innerHTML = bits.join('');
   const on = nav.querySelector('[aria-selected=true]');
   if (on) on.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
 }
@@ -596,6 +613,7 @@ async function load(opts = {}) {
 function select(id, dir) {
   if (id === state.activeId) return;
   state.activeId = id; LS.set('wx:active', id);
+  if (state.favs.some(f => f.id === id)) LS.set('wx:lastFav', id);
   const m = $('#main');
   if (dir) { m.classList.add(dir > 0 ? 'slide-l' : 'slide-r'); setTimeout(() => m.classList.remove('slide-l', 'slide-r'), 180); }
   window.scrollTo({ top: 0 });
@@ -727,7 +745,16 @@ function closeSheets() { document.querySelectorAll('.sheet').forEach(s => s.hidd
 
 /* ---------------- events ---------------- */
 function bind() {
-  $('#tabs').addEventListener('click', e => { const b = e.target.closest('.tab'); if (!b) return; const list = locations(); const i = list.findIndex(l => l.id === state.activeId), j = list.findIndex(l => l.id === b.dataset.id); select(b.dataset.id, Math.sign(j - i)); });
+  $('#tabs').addEventListener('click', e => {
+    const b = e.target.closest('.tab'); if (!b) return;
+    let id = b.dataset.id;
+    if (id === '__fav__') {
+      if (state.favs.some(f => f.id === state.activeId)) { openSheet('#favSheet'); renderFavs(); refreshFavTemps(); return; }
+      const f = lastFav(); if (!f) return; id = f.id;
+    }
+    const list = locations(); const i = list.findIndex(l => l.id === state.activeId), j = list.findIndex(l => l.id === id);
+    select(id, Math.sign(j - i));
+  });
   $('#btnStar').addEventListener('click', toggleFav);
   $('#btnRefresh').addEventListener('click', () => load({ force: true, relocate: state.activeId === 'here' }));
   $('#btnSearch').addEventListener('click', () => {
