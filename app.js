@@ -433,7 +433,7 @@ function toast(msg, ms = 2600) {
 function tabLabel(l) {
   if (l.id === 'here') return '📍 ' + (l.name && !l.fallback ? l.name : '현재 위치');
   if (!state.favs.some(f => f.id === l.id)) return '🔍 ' + l.name;
-  return '★ ' + l.name;
+  return '★';  // 즐겨찾기는 별만 (이름은 본문에 이미 있음)
 }
 function renderTabs() {
   const nav = $('#tabs');
