@@ -25,7 +25,7 @@ body.rain{--bg1:#2c3a50;--bg2:#3a4a62}
   body.rain{--bg1:#0d141f;--bg2:#24324a}
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;min-height:100%}
+html,body{margin:0;min-height:100%;touch-action:manipulation}
 body{
   font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard","Noto Sans KR","Malgun Gothic",system-ui,sans-serif;
   color:var(--fg); background:var(--bg1);
@@ -46,7 +46,7 @@ a{color:inherit;text-decoration:underline;text-underline-offset:2px}
   backdrop-filter:blur(14px) saturate(1.4);-webkit-backdrop-filter:blur(14px) saturate(1.4);
   -webkit-mask-image:linear-gradient(#000 0,#000 62%,transparent 100%);mask-image:linear-gradient(#000 0,#000 62%,transparent 100%)}
 .topbar.scrolled::before{opacity:1}
-.tabs{flex:1;display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;scroll-snap-type:x proximity;padding:2px}
+.tabs{flex:1;display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;scroll-snap-type:x proximity;padding:2px;touch-action:pan-x pan-y}
 .tabs::-webkit-scrollbar{display:none}
 .tab{flex:none;scroll-snap-align:center;border:0;border-radius:999px;padding:7px 12px;background:var(--chip);font-size:14px;font-weight:600;white-space:nowrap;cursor:pointer;display:flex;gap:5px;align-items:center}
 .tab .t{font-weight:500;opacity:.75}
@@ -70,7 +70,7 @@ main.slide-l{transform:translateX(-24px);opacity:.3} main.slide-r{transform:tran
 .status{margin:10px auto 0;display:inline-block;font-size:12px;padding:5px 10px;border-radius:999px;background:var(--chip)}
 .card{background:var(--card);border:1px solid var(--card-b);border-radius:20px;padding:14px 14px;margin:0 0 12px;box-shadow:var(--shadow);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
 .card h2{font-size:12.5px;font-weight:700;color:var(--fg2);margin:0 0 10px;letter-spacing:.02em}
-.hourly{display:flex;overflow-x:auto;gap:4px;scrollbar-width:none;margin:0 -6px;padding:0 6px;-webkit-overflow-scrolling:touch}
+.hourly{display:flex;overflow-x:auto;gap:4px;scrollbar-width:none;margin:0 -6px;padding:0 6px;-webkit-overflow-scrolling:touch;touch-action:pan-x pan-y}
 .hourly::-webkit-scrollbar{display:none}
 .hr{flex:none;width:54px;text-align:center;display:flex;flex-direction:column;gap:5px;align-items:center;font-size:13px}
 .hr .ic{font-size:24px;height:30px;line-height:30px}

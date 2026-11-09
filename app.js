@@ -3,6 +3,21 @@
    Open-Meteo는 국내에서도 자외선·일출몰·체감온도 보정·어제 기온(초기)·지오코딩·대기질 모델에 씁니다.
    + AirKorea real-time PM10/PM2.5 measurements (data/airkorea.json). data/는 GitHub Actions가 매시 갱신. */
 (() => {
+/* Block page pinch-zoom / double-tap zoom (iOS ignores user-scalable=no). Single-finger scroll (incl. #hourly/.tabs) stays intact. */
+for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(ev, e => e.preventDefault(), { passive: false });
+document.addEventListener('touchmove', e => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+let lastTouchEnd = 0;
+document.addEventListener('touchend', e => {
+  const now = Date.now();
+  if (now - lastTouchEnd < 350) {
+    e.preventDefault();
+    const t = e.target.closest('button, a, [role="button"]');
+    if (t) t.click();
+  }
+  lastTouchEnd = now;
+}, { passive: false });
+document.addEventListener('dblclick', e => e.preventDefault(), { passive: false });
+
 const $ = (s, r = document) => r.querySelector(s);
 const LS = {
   get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
