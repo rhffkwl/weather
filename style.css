@@ -216,3 +216,8 @@ body[data-sky^="fog"]::before{background:repeating-linear-gradient(180deg,transp
 body[data-sky^="snow-day"],body[data-sky^="fog-day"]{--fg:#0f1b2d;--fg2:rgba(15,27,45,.74)}
 @media (prefers-color-scheme:dark){body[data-sky^="snow-day"],body[data-sky^="fog-day"]{--fg:#eaf1ff;--fg2:rgba(234,241,255,.8)}}
 @media (prefers-reduced-transparency:reduce){body[data-sky]::before,body[data-sky]::after{display:none}}
+.favsync{margin-top:18px;padding-top:14px;border-top:1px solid rgba(127,140,160,.25);display:flex;flex-direction:column;gap:8px}
+.favsync .muted{font-size:12px;margin:0 0 2px}
+.syncrow{display:flex;gap:8px}
+.syncbtn{flex:1;border:0;border-radius:12px;padding:11px 10px;font:inherit;font-size:14px;font-weight:600;background:#1e6fd9;color:#fff;cursor:pointer}
+.syncbtn.sec{background:rgba(127,140,160,.18);color:inherit;font-weight:500}

@@ -14,7 +14,7 @@
  *   "37.57,126.98" 처럼 위도,경도를 직접 넣어도 됩니다.
  * - 웹앱: https://rhffkwl.github.io/weather/
  */
-const WIDGET_VERSION = "2026-10-19d"; // 앱에서 실행하면 로그에 출력됩니다
+const WIDGET_VERSION = "2026-11-12a"; // 앱에서 실행하면 로그에 출력됩니다
 
 const CONFIG = {
   appURL: "https://rhffkwl.github.io/weather/",
@@ -36,6 +36,17 @@ const DIR = fm.joinPath(fm.documentsDirectory(), "weather-widget");
 if (!fm.fileExists(DIR)) fm.createDirectory(DIR, true);
 
 const PARAM = String((config.runsInWidget ? args.widgetParameter : (args.widgetParameter || CONFIG.debugParameter)) || "").trim();
+// 웹앱의 「위젯·Safari로 즐겨찾기 보내기」가 scriptable:///run/하늘%20날씨?favs=… 로 이 스크립트를 실행하면 여기에 저장.
+// 위젯을 누르면 이 즐겨찾기와 현재 위치를 웹앱 주소(#here=…&favs=…)에 붙여 Safari로 열어, 홈 화면 앱과 같은 즐겨찾기가 보이게 함.
+const QP = (args && args.queryParameters) || {};
+const FAVS_FILE = fm.joinPath(DIR, "favs.txt");
+function savedFavs() { try { if (fm.fileExists(FAVS_FILE)) { const v = fm.readString(FAVS_FILE).trim(); if (/^[A-Za-z0-9_-]+$/.test(v)) return v; } } catch (e) {} return ""; }
+function appLink(loc) {
+  const parts = [];
+  if (loc && /^gps$/.test(loc.source) && isNum(loc.lat)) parts.push("here=" + loc.lat.toFixed(5) + "," + loc.lon.toFixed(5) + "," + Math.floor(Date.now() / 1000));
+  const f = savedFavs(); if (f) parts.push("favs=" + f);
+  return CONFIG.appURL + (parts.length ? "#" + parts.join("&") : "");
+}
 const FAMILY = config.runsInWidget ? (config.widgetFamily || "medium") : CONFIG.previewSize;
 
 class NotFoundError extends Error {}
@@ -950,9 +961,10 @@ const left = () => Math.max(1, CONFIG.budgetSeconds - (Date.now() - T0) / 1000);
 async function main() {
   const cacheFile = fm.joinPath(DIR, "cache-" + (PARAM ? "p" + hashStr(PARAM) : "here") + ".json");
   const cache = readJSON(cacheFile);
-  let model = null, err = null;
+  let model = null, err = null, link = CONFIG.appURL;
   try {
     const loc = await resolveLocation(cache);
+    link = appLink(loc);
     const np = loc.namePromise; delete loc.namePromise;
     const { fc, aq, ak } = await withTimeout(fetchWeather(loc), Math.max(4, left() - 1), "날씨");
     if (np) {
@@ -978,7 +990,7 @@ async function main() {
   let w;
   try { w = model ? buildWidget(model, FAMILY) : errorWidget(err, FAMILY); }
   catch (e) { console.log("위젯 그리기 실패: " + e); w = errorWidget(e, FAMILY); }
-  w.url = CONFIG.appURL;
+  w.url = link === CONFIG.appURL ? appLink(null) : link;
   w.refreshAfterDate = new Date(Date.now() + CONFIG.refreshMinutes * 60 * 1000);
   if (config.runsInWidget) {
     Script.setWidget(w);
@@ -992,9 +1004,25 @@ async function main() {
   Script.complete();
 }
 
-try { await main(); }
+async function receiveFavs() {
+  const v = String(QP.favs || "").trim();
+  if (!/^[A-Za-z0-9_-]*$/.test(v)) throw new Error("즐겨찾기 형식이 올바르지 않아요");
+  fm.writeString(FAVS_FILE, v);
+  let n = 0; try { const b = v.replace(/-/g, "+").replace(/_/g, "/"); n = JSON.parse(Data.fromBase64String(b + "===".slice((b.length + 3) % 4)).toRawString()).length; } catch (e) {}
+  const a = new Alert();
+  a.title = "즐겨찾기 저장 완료";
+  a.message = `위젯에 즐겨찾기 ${n}곳을 저장했어요. 이제 위젯을 누르면 Safari에서도 같은 즐겨찾기가 보여요.`;
+  a.addAction("Safari에서 바로 열기"); a.addCancelAction("닫기");
+  if (await a.present() === 0) Safari.open(CONFIG.appURL + "#favs=" + v);
+  Script.complete();
+}
+
+if (QP.favs !== undefined && !config.runsInWidget) {
+  try { await receiveFavs(); }
+  catch (e) { const a = new Alert(); a.title = "저장 실패"; a.message = String(e.message || e); a.addAction("확인"); await a.present(); Script.complete(); }
+} else try { await main(); }
 catch (e) { // 어떤 오류든 위젯을 꼭 넘겨야 iOS가 refreshAfterDate대로 다시 실행함
   console.log("main 실패: " + e);
-  const w = errorWidget(e, FAMILY); w.url = CONFIG.appURL; w.refreshAfterDate = new Date(Date.now() + 15 * 60 * 1000);
+  const w = errorWidget(e, FAMILY); w.url = appLink(null); w.refreshAfterDate = new Date(Date.now() + 15 * 60 * 1000);
   if (config.runsInWidget) Script.setWidget(w); Script.complete();
 }

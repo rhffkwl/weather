@@ -246,7 +246,57 @@ const state = {
   activeId: LS.get('wx:active', 'here'),
   editing: false,
 };
-const saveFavs = () => LS.set('wx:favs', state.favs);
+// 즐겨찾기 동기화: iOS는 홈 화면 앱과 Safari의 저장 공간이 따로라, 위젯/링크로 받은 목록을 합침.
+// 여기서 지운 위치(wx:favsDel)는 위젯이 다시 보내도 되살리지 않음(직접 '가져오기'는 예외).
+let favKeys = new Set(state.favs.map(f => keyOf(f.lat, f.lon)));
+function saveFavs() {
+  LS.set('wx:favs', state.favs);
+  const now = new Set(state.favs.map(f => keyOf(f.lat, f.lon)));
+  const del = new Set(LS.get('wx:favsDel', []));
+  for (const k of favKeys) if (!now.has(k)) del.add(k);
+  for (const k of now) del.delete(k);
+  LS.set('wx:favsDel', [...del].slice(-200)); favKeys = now;
+}
+const b64e = str => btoa(String.fromCharCode(...new TextEncoder().encode(str))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const b64d = s => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)));
+const encFavs = favs => b64e(JSON.stringify(favs.map(f => [f.name, f.sub || '', +(+f.lat).toFixed(4), +(+f.lon).toFixed(4), f.id])));
+function decFavs(s) {
+  try {
+    const a = JSON.parse(b64d(s)); if (!Array.isArray(a)) return [];
+    return a.filter(x => Array.isArray(x) && isFinite(x[2]) && isFinite(x[3])).map(x => ({ id: String(x[4] || 'c' + keyOf(x[2], x[3])), name: String(x[0] || '저장한 위치'), sub: String(x[1] || ''), lat: +x[2], lon: +x[3] }));
+  } catch { return []; }
+}
+function mergeFavs(list, force) {
+  const del = new Set(force ? [] : LS.get('wx:favsDel', []));
+  let n = 0;
+  for (const f of list) {
+    const k = keyOf(f.lat, f.lon);
+    if (del.has(k) || state.favs.some(x => x.id === f.id || keyOf(x.lat, x.lon) === k)) continue;
+    state.favs.push(f); n++;
+  }
+  if (n) saveFavs();
+  return n;
+}
+// 위젯이 여는 주소: #here=위도,경도,초&favs=…  (위젯이 이미 정확한 위치를 알고 있으면 바로 씀)
+let hereHint = null;
+function readHash() {
+  const h = location.hash.replace(/^#/, ''); if (!h) return 0;
+  const q = new URLSearchParams(h); let added = 0;
+  if (q.has('favs')) added = mergeFavs(decFavs(q.get('favs')), false);
+  const hm = (q.get('here') || '').split(',').map(Number);
+  if (hm.length >= 2 && isFinite(hm[0]) && isFinite(hm[1]) && Math.abs(hm[0]) <= 90 && Math.abs(hm[1]) <= 180) {
+    const ts = hm[2] ? hm[2] * 1000 : Date.now();
+    if (Date.now() - ts < 30 * 60e3) {
+      const lat = +hm[0].toFixed(4), lon = +hm[1].toFixed(4), prev = state.here;
+      const same = prev && !prev.fallback && prev.name && prev.src !== 'widget' && Math.abs(prev.lat - lat) < 0.002 && Math.abs(prev.lon - lon) < 0.002;
+      hereHint = { lat, lon, at: ts };
+      state.here = same ? { ...prev, lat, lon } : { lat, lon, name: '현재 위치', sub: '', src: 'widget', vwTry: 0, fallback: false, at: 0 };
+      state.activeId = 'here'; LS.set('wx:active', 'here');
+    }
+  }
+  if (q.has('favs') || q.has('here')) try { history.replaceState(null, '', location.pathname + location.search); } catch {}
+  return added;
+}
 function locations() {
   const list = [{ id: 'here', ...(state.here || {}) }, ...state.favs];
   if (state.temp && !state.favs.some(f => f.id === state.temp.id)) list.push(state.temp);
@@ -397,16 +447,38 @@ async function bdcName(lat, lon) {
     return { name, sub, src: 'bdc' };
   } catch { return { name: '현재 위치', sub: '', src: 'none' }; }
 }
-// 현재 위치는 열 때마다 새로: 1분 넘은 저장 위치는 쓰지 않음(예전엔 10분). 시간 초과면 GPS로 한 번 더.
+// 현재 위치: GPS(고정밀)로 받음. 예전엔 저정밀(기지국·IP)부터 써서 답십리역이 '남대문로5가'처럼 몇 km 어긋났음.
+// watchPosition으로 들어오는 값 중 가장 정확한 것을 쓰고, 100m 이내가 되거나 8초가 지나면 멈춤.
 function geoOnce(o) {
   return new Promise((res, rej) => {
     if (!('geolocation' in navigator)) return rej(new Error('unsupported'));
     navigator.geolocation.getCurrentPosition(p => res(p.coords), rej, o);
   });
 }
+function geoBest(good = 100, maxMs = 8000) {
+  return new Promise((res, rej) => {
+    if (!('geolocation' in navigator)) return rej(new Error('unsupported'));
+    let best = null, done = false, id = null, t = null;
+    const finish = (err) => {
+      if (done) return; done = true; clearTimeout(t);
+      if (id != null) navigator.geolocation.clearWatch(id);
+      if (best && !(err && err.code === 1)) res(best); else rej(err || { code: 3, message: 'timeout' });
+    };
+    t = setTimeout(() => finish(null), maxMs);
+    id = navigator.geolocation.watchPosition(p => {
+      const c = p.coords;
+      if (!best || (c.accuracy || 1e9) < (best.accuracy || 1e9)) best = c;
+      if ((c.accuracy || 1e9) <= good) finish(null);
+    }, e => { if (e && e.code === 1) finish(e); else if (best) finish(null); /* 그 외 오류는 시간 안에서 계속 기다림 */ },
+    { enableHighAccuracy: true, maximumAge: 0, timeout: maxMs });
+  });
+}
 async function geolocate() {
-  try { return await geoOnce({ enableHighAccuracy: false, timeout: 10000, maximumAge: 60 * 1000 }); }
-  catch (e) { if (e && e.code === 1) throw e; return geoOnce({ enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }); }
+  try { return await geoBest(); }
+  catch (e) {
+    if (e && e.code === 1) throw e;
+    return geoOnce({ enableHighAccuracy: false, timeout: 10000, maximumAge: 5 * 60 * 1000 }); // GPS 시간 초과·불가일 때만
+  }
 }
 // 위치 확인은 한 번에 하나만. 그 사이에 다른 load()가 와도(온라인 복귀·다시 열기 등) 같은 결과를 기다렸다가 새 위치로 그림.
 // (예전엔 나중 load()가 먼저 옛 위치로 그리고, 새 위치 결과는 버려져 '마장동'이 남는 일이 있었음)
@@ -414,15 +486,19 @@ let herePending = null;
 function relocateHere() { if (!herePending) herePending = resolveHere().finally(() => { herePending = null; }); return herePending; }
 async function resolveHere() {
   try {
-    const c = await geolocate();
+    let c = await geolocate();
+    // GPS가 안 돼서 거친 위치(1km 넘게 오차)만 받았으면, 위젯이 30분 안에 알려 준 위치가 더 정확함
+    if ((c.accuracy || 0) > 1000 && hereHint && Date.now() - hereHint.at < 30 * 60e3) c = { latitude: hereHint.lat, longitude: hereHint.lon, accuracy: 100 };
     const lat = +c.latitude.toFixed(4), lon = +c.longitude.toFixed(4);
     const prev = state.here;
-    // 1km 안에서는 이전 이름을 다시 씀. 단, 국내인데 브이월드 이름이 아니면(예전 이름·일시 실패) 30분마다 다시 시도
+    // 이전 이름은 ~200m 안에서만 다시 씀(예전엔 1km라 거친 위치로 잡힌 옆 동 이름이 남았음).
+    // 국내인데 브이월드 이름이 아니면(예전 이름·일시 실패) 30분마다 다시 시도
     // (prev.src === 'vworld' 은 이번 세션 메모리에서만 생김. 저장본은 'stored'라 국내면 다시 물어봄)
     const near = prev && !prev.fallback && Math.abs(prev.lat - lat) < 0.01 && Math.abs(prev.lon - lon) < 0.01;
     const moved = !prev || Math.abs(prev.lat - lat) > 0.002 || Math.abs(prev.lon - lon) > 0.002; // ~200m: 동 경계가 촘촘해서
+    const named = prev && prev.name && prev.name !== '현재 위치' && prev.src !== 'widget';
     const wantVw = kmaInKorea(lat, lon) && (!(prev && prev.src === 'vworld') || moved) && !(prev && prev.src !== 'vworld' && prev.vwTry && Date.now() - prev.vwTry < 30 * 60e3);
-    let nm = near && !wantVw ? prev : null;
+    let nm = near && !moved && named && !wantVw ? prev : null;
     let vwTry = prev && near ? prev.vwTry : 0;
     if (!nm) { nm = await reverseName(lat, lon); if (kmaInKorea(lat, lon) && nm.src !== 'vworld') vwTry = Date.now(); }
     state.here = { lat, lon, name: nm.name, sub: nm.sub, src: nm.src, vwTry, fallback: false, at: Date.now() };
@@ -606,7 +682,14 @@ async function load(opts = {}) {
     if (l.lat == null) { renderHeader({ id: 'here', name: '위치 확인 중…' }); renderEmpty(); setStatus('위치 확인 중…'); }
     else setStatus('현재 위치 확인 중…');
     const before = l.lat != null ? keyOf(l.lat, l.lon) : '';
-    await relocateHere(); if (seq !== loadSeq) return; l = active(); renderTabs();
+    // GPS를 기다리는 동안 위젯이 준 위치(또는 1시간 안의 마지막 위치)로 먼저 날씨를 그림. 정확한 위치가 오면 다시 그림.
+    let relocDone = false;
+    const c0 = l.lat != null ? cacheGet(l) : null;
+    if (l.lat != null && !l.fallback && !(c0 && c0.f && c0.f.hourly) && (l.src === 'widget' || (l.at && Date.now() - l.at < 60 * 60e3))) {
+      const l0 = l;
+      fetchWeather(l0).then(d => { if (!relocDone && seq === loadSeq) renderWeather(d); }).catch(() => {});
+    }
+    await relocateHere(); relocDone = true; if (seq !== loadSeq) return; l = active(); renderTabs();
     if (keyOf(l.lat, l.lon) !== before) opts.force = true;
   }
   renderHeader(l);
@@ -842,9 +925,42 @@ function bind() {
 }
 
 /* ---------------- boot ---------------- */
+function favsLink() { return location.origin + location.pathname + '#favs=' + encFavs(state.favs); }
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch {}
+  const ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.top = '-1000px';
+  document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+  let ok = false; try { ok = document.execCommand('copy'); } catch {}
+  ta.remove(); return ok;
+}
+function bindSync() {
+  $('#btnSendWidget').addEventListener('click', () => {
+    if (!state.favs.length) return toast('보낼 즐겨찾기가 없어요');
+    // Scriptable 위젯('하늘 날씨' 스크립트)에 저장 → 위젯을 누르면 Safari에도 같은 즐겨찾기가 들어감
+    location.href = 'scriptable:///run/' + encodeURIComponent('하늘 날씨') + '?favs=' + encFavs(state.favs);
+  });
+  $('#btnCopyFavs').addEventListener('click', async () => {
+    if (!state.favs.length) return toast('복사할 즐겨찾기가 없어요');
+    toast(await copyText(favsLink()) ? '링크를 복사했어요. 다른 쪽에서 「붙여넣기로 가져오기」를 누르세요' : '복사하지 못했어요', 3500);
+  });
+  $('#btnPasteFavs').addEventListener('click', async () => {
+    let t = ''; try { t = await navigator.clipboard.readText(); } catch {}
+    if (!t) t = prompt('복사한 즐겨찾기 링크를 붙여넣으세요') || '';
+    const m = t.match(/favs=([A-Za-z0-9_-]+)/); const list = m ? decFavs(m[1]) : [];
+    if (!list.length) return toast('즐겨찾기 링크가 아니에요');
+    const n = mergeFavs(list, true); renderFavs(); renderTabs(); renderHeader(active());
+    toast(n ? `즐겨찾기 ${n}곳을 가져왔어요` : '이미 모두 있어요');
+  });
+  window.addEventListener('hashchange', () => {
+    const had = hereHint; const n = readHash(); if (n) { renderTabs(); toast(`즐겨찾기 ${n}곳을 가져왔어요`); }
+    if (hereHint !== had) { renderTabs(); load({ relocate: true, force: true }); }
+  });
+}
 function boot() {
+  const added = readHash();
+  if (added) setTimeout(() => toast(`위젯에서 즐겨찾기 ${added}곳을 가져왔어요`), 600);
   if (!locations().some(l => l.id === state.activeId)) state.activeId = 'here';
-  bind(); renderTabs();
+  bind(); bindSync(); renderTabs();
   load({ relocate: state.activeId === 'here', force: false });
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     const hadSW = !!navigator.serviceWorker.controller;
