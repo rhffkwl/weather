@@ -147,4 +147,55 @@ function kmaApply(f, k, nowMs) {
 }
 // "15시 실황" 같은 표시용
 function kmaHourLabel(base) { return base ? Number(String(base).slice(8, 10)) + "시" : ""; }
+// 일출·일몰(NOAA 근사식, 1~2분 오차) → 현지(KST) "YYYY-MM-DDTHH:MM". Open-Meteo 없이 기상청 자료만 쓸 때 낮/밤 판단용.
+function kmaSun(lat, lon, dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number), r = Math.PI / 180;
+  const n = (Date.UTC(y, m - 1, d) - Date.UTC(y, 0, 1)) / 864e5, g = 2 * Math.PI / 365 * n;
+  const eq = 229.18 * (0.000075 + 0.001868 * Math.cos(g) - 0.032077 * Math.sin(g) - 0.014615 * Math.cos(2 * g) - 0.040849 * Math.sin(2 * g));
+  const dec = 0.006918 - 0.399912 * Math.cos(g) + 0.070257 * Math.sin(g) - 0.006758 * Math.cos(2 * g) + 0.000907 * Math.sin(2 * g) - 0.002697 * Math.cos(3 * g) + 0.00148 * Math.sin(3 * g);
+  const ha = Math.acos(Math.max(-1, Math.min(1, Math.cos(90.833 * r) / (Math.cos(lat * r) * Math.cos(dec)) - Math.tan(lat * r) * Math.tan(dec)))) / r;
+  const at = mins => new Date(Date.UTC(y, m - 1, d) + (mins + 540) * 60e3).toISOString().slice(0, 16);
+  return [at(720 - 4 * (lon + ha) - eq), at(720 - 4 * (lon - ha) - eq)];
+}
+// Open-Meteo에 연결이 안 될 때: 기상청 자료만으로 Open-Meteo 모양의 예보를 만듦 (자외선·돌풍은 없음). 자료가 없거나 오래됐으면 null.
+function kmaForecast(k, lat, lon, nowMs) {
+  if (!k || !k.pt) return null;
+  nowMs = nowMs || Date.now();
+  const iso = ms => new Date(ms + 9 * 3600e3).toISOString().slice(0, 13) + ":00";
+  const hour0 = Math.floor(nowMs / 3600e3) * 3600e3;
+  let end = hour0 + 24 * 3600e3;
+  if (k.vil && Array.isArray(k.vil.h) && k.vil.h.length) end = Math.max(hour0 + 3600e3, kmaTime(k.vil.t0) + k.vil.h[k.vil.h.length - 1][0] * 3600e3);
+  const sun = {}, sunOf = d => sun[d] || (sun[d] = kmaSun(lat, lon, d));
+  const H = { time: [], temperature_2m: [], precipitation_probability: [], weather_code: [], is_day: [] };
+  for (let t = hour0 - 24 * 3600e3; t <= end; t += 3600e3) {
+    const s = iso(t), ss = sunOf(s.slice(0, 10));
+    H.time.push(s); H.temperature_2m.push(null); H.precipitation_probability.push(null); H.weather_code.push(null); H.is_day.push(s >= ss[0] && s < ss[1] ? 1 : 0);
+  }
+  const today = iso(nowMs).slice(0, 10), D = { time: [], weather_code: [], temperature_2m_max: [], temperature_2m_min: [], precipitation_probability_max: [], uv_index_max: [], sunrise: [], sunset: [] };
+  for (let i = 0; i < 10; i++) {
+    const d = new Date(Date.UTC(+today.slice(0, 4), +today.slice(5, 7) - 1, +today.slice(8, 10) + i)).toISOString().slice(0, 10), ss = sunOf(d);
+    D.time.push(d); D.weather_code.push(null); D.temperature_2m_max.push(null); D.temperature_2m_min.push(null); D.precipitation_probability_max.push(null); D.uv_index_max.push(null); D.sunrise.push(ss[0]); D.sunset.push(ss[1]);
+  }
+  const ct = new Date(nowMs + 9 * 3600e3).toISOString().slice(0, 16), cs = sunOf(today);
+  const c = { time: ct, temperature_2m: null, relative_humidity_2m: null, apparent_temperature: null, is_day: ct >= cs[0] && ct < cs[1] ? 1 : 0, precipitation: 0, weather_code: null,
+    wind_speed_10m: null, wind_direction_10m: null, wind_gusts_10m: null, uv_index: null, dew_point_2m: null };
+  const f = { latitude: lat, longitude: lon, timezone: "Asia/Seoul", utc_offset_seconds: 32400, current: c, hourly: H, daily: D, yday: null };
+  if (!kmaApply(f, k, nowMs)) return null;
+  const i0 = H.time.indexOf(iso(nowMs));
+  if (c.temperature_2m == null && i0 >= 0) c.temperature_2m = H.temperature_2m[i0];
+  if (c.temperature_2m == null) return null;
+  if (c.weather_code == null) c.weather_code = i0 >= 0 && H.weather_code[i0] != null ? H.weather_code[i0] : 0;
+  // 체감온도: 10°C 이하·바람 1.3m/s 이상이면 기상청 체감온도(겨울) 식, 그 밖엔 기온 그대로
+  const T = c.temperature_2m, V = (c.wind_speed_10m || 0) * 3.6;
+  c.apparent_temperature = T <= 10 && V >= 4.8 ? Math.round((13.12 + 0.6215 * T - 11.37 * Math.pow(V, 0.16) + 0.3965 * T * Math.pow(V, 0.16)) * 10) / 10 : T;
+  if (typeof f.yday !== "number" && i0 >= 24 && typeof H.temperature_2m[i0 - 24] === "number") f.yday = H.temperature_2m[i0 - 24];
+  // 값이 없는 뒤쪽 시간·날짜는 잘라 냄
+  let hn = H.time.length; while (hn > i0 + 1 && H.temperature_2m[hn - 1] == null) hn--;
+  for (const key of Object.keys(H)) H[key] = H[key].slice(0, hn);
+  let dn = D.time.length; while (dn > 1 && (D.temperature_2m_max[dn - 1] == null || D.temperature_2m_min[dn - 1] == null || D.weather_code[dn - 1] == null)) dn--;
+  for (const key of Object.keys(D)) D[key] = D[key].slice(0, dn);
+  for (let j = 0; j < dn; j++) { if (D.weather_code[j] == null) D.weather_code[j] = c.weather_code; if (D.temperature_2m_max[j] == null) D.temperature_2m_max[j] = Math.round(T); if (D.temperature_2m_min[j] == null) D.temperature_2m_min[j] = Math.floor(T); }
+  f.kma.only = true;
+  return f;
+}
 /* KMA:END */

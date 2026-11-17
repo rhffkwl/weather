@@ -75,14 +75,14 @@ table { border-collapse:collapse; width:100%; font-size:14px; } td,th { border-b
  *   &quot;37.57,126.98&quot; 처럼 위도,경도를 직접 넣어도 됩니다.
  * - 웹앱: https://rhffkwl.github.io/weather/
  */
-const WIDGET_VERSION = &quot;2026-11-12a&quot;; // 앱에서 실행하면 로그에 출력됩니다
+const WIDGET_VERSION = &quot;2026-11-18a&quot;; // 앱에서 실행하면 로그에 출력됩니다
 
 const CONFIG = {
   appURL: &quot;https://rhffkwl.github.io/weather/&quot;,
   airKoreaURL: &quot;https://rhffkwl.github.io/weather/data/airkorea.json&quot;,
   kmaBaseURL: &quot;https://rhffkwl.github.io/weather/data/kma/&quot;,
   fallback: { name: &quot;서울&quot;, lat: 37.5665, lon: 126.978 },
-  refreshMinutes: 30,
+  refreshMinutes: 20,   // 다음 새로 고침 요청(실제 시각은 iOS가 정함). 실패했을 땐 10분 뒤 다시 요청
   budgetSeconds: 22,    // 위젯 한 번 실행에 쓰는 최대 시간(iOS가 오래 걸리는 위젯을 강제 종료하면 화면이 멈춘 채 남음)
   locationTimeout: 8,   // 초
   requestTimeout: 12,   // 초
@@ -131,9 +131,9 @@ function withTimeout(p, sec, label) {
   return Promise.race([p, sleep(sec).then(() =&gt; { throw new Error(label + &quot; 시간 초과&quot;); })]);
 }
 
-async function getJSON(url) {
+async function getJSON(url, sec) {
   const req = new Request(url);
-  req.timeoutInterval = CONFIG.requestTimeout;
+  req.timeoutInterval = sec || CONFIG.requestTimeout;
   const j = await req.loadJSON();
   const sc = req.response &amp;&amp; req.response.statusCode;
   if (sc &amp;&amp; sc &gt;= 400) throw new Error(&quot;HTTP &quot; + sc + (j &amp;&amp; j.reason ? &quot;: &quot; + j.reason : &quot;&quot;));
@@ -352,6 +352,57 @@ function kmaApply(f, k, nowMs) {
 }
 // &quot;15시 실황&quot; 같은 표시용
 function kmaHourLabel(base) { return base ? Number(String(base).slice(8, 10)) + &quot;시&quot; : &quot;&quot;; }
+// 일출·일몰(NOAA 근사식, 1~2분 오차) → 현지(KST) &quot;YYYY-MM-DDTHH:MM&quot;. Open-Meteo 없이 기상청 자료만 쓸 때 낮/밤 판단용.
+function kmaSun(lat, lon, dateStr) {
+  const [y, m, d] = dateStr.split(&quot;-&quot;).map(Number), r = Math.PI / 180;
+  const n = (Date.UTC(y, m - 1, d) - Date.UTC(y, 0, 1)) / 864e5, g = 2 * Math.PI / 365 * n;
+  const eq = 229.18 * (0.000075 + 0.001868 * Math.cos(g) - 0.032077 * Math.sin(g) - 0.014615 * Math.cos(2 * g) - 0.040849 * Math.sin(2 * g));
+  const dec = 0.006918 - 0.399912 * Math.cos(g) + 0.070257 * Math.sin(g) - 0.006758 * Math.cos(2 * g) + 0.000907 * Math.sin(2 * g) - 0.002697 * Math.cos(3 * g) + 0.00148 * Math.sin(3 * g);
+  const ha = Math.acos(Math.max(-1, Math.min(1, Math.cos(90.833 * r) / (Math.cos(lat * r) * Math.cos(dec)) - Math.tan(lat * r) * Math.tan(dec)))) / r;
+  const at = mins =&gt; new Date(Date.UTC(y, m - 1, d) + (mins + 540) * 60e3).toISOString().slice(0, 16);
+  return [at(720 - 4 * (lon + ha) - eq), at(720 - 4 * (lon - ha) - eq)];
+}
+// Open-Meteo에 연결이 안 될 때: 기상청 자료만으로 Open-Meteo 모양의 예보를 만듦 (자외선·돌풍은 없음). 자료가 없거나 오래됐으면 null.
+function kmaForecast(k, lat, lon, nowMs) {
+  if (!k || !k.pt) return null;
+  nowMs = nowMs || Date.now();
+  const iso = ms =&gt; new Date(ms + 9 * 3600e3).toISOString().slice(0, 13) + &quot;:00&quot;;
+  const hour0 = Math.floor(nowMs / 3600e3) * 3600e3;
+  let end = hour0 + 24 * 3600e3;
+  if (k.vil &amp;&amp; Array.isArray(k.vil.h) &amp;&amp; k.vil.h.length) end = Math.max(hour0 + 3600e3, kmaTime(k.vil.t0) + k.vil.h[k.vil.h.length - 1][0] * 3600e3);
+  const sun = {}, sunOf = d =&gt; sun[d] || (sun[d] = kmaSun(lat, lon, d));
+  const H = { time: [], temperature_2m: [], precipitation_probability: [], weather_code: [], is_day: [] };
+  for (let t = hour0 - 24 * 3600e3; t &lt;= end; t += 3600e3) {
+    const s = iso(t), ss = sunOf(s.slice(0, 10));
+    H.time.push(s); H.temperature_2m.push(null); H.precipitation_probability.push(null); H.weather_code.push(null); H.is_day.push(s &gt;= ss[0] &amp;&amp; s &lt; ss[1] ? 1 : 0);
+  }
+  const today = iso(nowMs).slice(0, 10), D = { time: [], weather_code: [], temperature_2m_max: [], temperature_2m_min: [], precipitation_probability_max: [], uv_index_max: [], sunrise: [], sunset: [] };
+  for (let i = 0; i &lt; 10; i++) {
+    const d = new Date(Date.UTC(+today.slice(0, 4), +today.slice(5, 7) - 1, +today.slice(8, 10) + i)).toISOString().slice(0, 10), ss = sunOf(d);
+    D.time.push(d); D.weather_code.push(null); D.temperature_2m_max.push(null); D.temperature_2m_min.push(null); D.precipitation_probability_max.push(null); D.uv_index_max.push(null); D.sunrise.push(ss[0]); D.sunset.push(ss[1]);
+  }
+  const ct = new Date(nowMs + 9 * 3600e3).toISOString().slice(0, 16), cs = sunOf(today);
+  const c = { time: ct, temperature_2m: null, relative_humidity_2m: null, apparent_temperature: null, is_day: ct &gt;= cs[0] &amp;&amp; ct &lt; cs[1] ? 1 : 0, precipitation: 0, weather_code: null,
+    wind_speed_10m: null, wind_direction_10m: null, wind_gusts_10m: null, uv_index: null, dew_point_2m: null };
+  const f = { latitude: lat, longitude: lon, timezone: &quot;Asia/Seoul&quot;, utc_offset_seconds: 32400, current: c, hourly: H, daily: D, yday: null };
+  if (!kmaApply(f, k, nowMs)) return null;
+  const i0 = H.time.indexOf(iso(nowMs));
+  if (c.temperature_2m == null &amp;&amp; i0 &gt;= 0) c.temperature_2m = H.temperature_2m[i0];
+  if (c.temperature_2m == null) return null;
+  if (c.weather_code == null) c.weather_code = i0 &gt;= 0 &amp;&amp; H.weather_code[i0] != null ? H.weather_code[i0] : 0;
+  // 체감온도: 10°C 이하·바람 1.3m/s 이상이면 기상청 체감온도(겨울) 식, 그 밖엔 기온 그대로
+  const T = c.temperature_2m, V = (c.wind_speed_10m || 0) * 3.6;
+  c.apparent_temperature = T &lt;= 10 &amp;&amp; V &gt;= 4.8 ? Math.round((13.12 + 0.6215 * T - 11.37 * Math.pow(V, 0.16) + 0.3965 * T * Math.pow(V, 0.16)) * 10) / 10 : T;
+  if (typeof f.yday !== &quot;number&quot; &amp;&amp; i0 &gt;= 24 &amp;&amp; typeof H.temperature_2m[i0 - 24] === &quot;number&quot;) f.yday = H.temperature_2m[i0 - 24];
+  // 값이 없는 뒤쪽 시간·날짜는 잘라 냄
+  let hn = H.time.length; while (hn &gt; i0 + 1 &amp;&amp; H.temperature_2m[hn - 1] == null) hn--;
+  for (const key of Object.keys(H)) H[key] = H[key].slice(0, hn);
+  let dn = D.time.length; while (dn &gt; 1 &amp;&amp; (D.temperature_2m_max[dn - 1] == null || D.temperature_2m_min[dn - 1] == null || D.weather_code[dn - 1] == null)) dn--;
+  for (const key of Object.keys(D)) D[key] = D[key].slice(0, dn);
+  for (let j = 0; j &lt; dn; j++) { if (D.weather_code[j] == null) D.weather_code[j] = c.weather_code; if (D.temperature_2m_max[j] == null) D.temperature_2m_max[j] = Math.round(T); if (D.temperature_2m_min[j] == null) D.temperature_2m_min[j] = Math.floor(T); }
+  f.kma.only = true;
+  return f;
+}
 /* KMA:END */
 
 
@@ -497,10 +548,17 @@ async function fetchWeather(loc) {
   }));
   const aqURL = &quot;https://air-quality-api.open-meteo.com/v1/air-quality?&quot; + qs(Object.assign({}, base, { current: &quot;pm10,pm2_5&quot; }));
   const akURL = CONFIG.airKoreaURL + &quot;?t=&quot; + Math.floor(Date.now() / 300000);
-  const [fc, aq, ak, km] = await Promise.all([getJSON(fcURL), getJSON(aqURL).catch(() =&gt; null),
+  // Open-Meteo가 안 되면(시간 초과·요청 한도) 기상청 자료만으로 그림. 예전엔 Open-Meteo 하나만 실패해도 옛 저장본(오프라인)만 보였음.
+  let omErr = null;
+  const [fc0, aq, ak, km] = await Promise.all([getJSON(fcURL, 9).catch(e =&gt; { omErr = e; return null; }), getJSON(aqURL, 9).catch(() =&gt; null),
     getJSON(akURL).then(doc =&gt; akNearest(doc, loc.lat, loc.lon)).catch(() =&gt; null), fetchKma(loc).catch(() =&gt; null)]);
-  if (!fc || !fc.current || !fc.hourly || !fc.daily) throw new Error(&quot;예보 데이터가 비어 있어요&quot;);
-  if (km) { try { kmaApply(fc, km); } catch (e) { console.log(&quot;KMA merge failed: &quot; + e); } }
+  let fc = fc0 &amp;&amp; fc0.current &amp;&amp; fc0.hourly &amp;&amp; fc0.daily ? fc0 : null;
+  if (fc) { if (km) { try { kmaApply(fc, km); } catch (e) { console.log(&quot;KMA merge failed: &quot; + e); } } }
+  else {
+    console.log(&quot;Open-Meteo 실패: &quot; + (omErr ? omErr.message || omErr : &quot;빈 응답&quot;) + &quot; → 기상청 자료만 사용&quot;);
+    try { fc = km ? kmaForecast(km, loc.lat, loc.lon) : null; } catch (e) { console.log(&quot;KMA-only 실패: &quot; + e); }
+    if (!fc) throw omErr || new Error(&quot;예보 데이터가 비어 있어요&quot;);
+  }
   return { fc, aq, ak };
 }
 
@@ -512,7 +570,7 @@ function dowLabel(dateStr) {
 
 function buildModel(raw, offline) {
   const { loc, fc, aq, ak, fetchedAt } = raw;
-  const c = fc.current, h = fc.hourly, d = fc.daily;
+  let c = fc.current; const h = fc.hourly, d = fc.daily;
   const nowISO = seoulISO(Date.now());
   const nowHour = nowISO.slice(0, 13);
   let idx = h.time.findIndex(t =&gt; t.slice(0, 13) &gt;= nowHour);
@@ -536,10 +594,17 @@ function buildModel(raw, offline) {
       pop: d.precipitation_probability_max ? d.precipitation_probability_max[i] : null,
     });
   }
-  const aqc = aq &amp;&amp; aq.current ? aq.current : {};
+  const stale = Date.now() - (fetchedAt || 0) &gt; 90 * 60 * 1000;
+  if (stale &amp;&amp; idx &gt;= 0 &amp;&amp; h.time[idx].slice(0, 13) === nowHour) {
+    // 오래된 저장본: 그때의 실황 대신 지금 시각의 예보 값을 &#x27;현재&#x27;로
+    const dT = (isNum(c.apparent_temperature) &amp;&amp; isNum(c.temperature_2m)) ? c.apparent_temperature - c.temperature_2m : 0;
+    c = Object.assign({}, c, { temperature_2m: h.temperature_2m[idx], weather_code: h.weather_code[idx], is_day: h.is_day ? h.is_day[idx] : c.is_day, kma_desc: &quot;&quot; });
+    c.apparent_temperature = isNum(c.temperature_2m) ? c.temperature_2m + dT : null;
+  }
+  const aqc = aq &amp;&amp; aq.current &amp;&amp; !stale ? aq.current : {};
   const isDay = c.is_day === 1;
   const yi = h.time.findIndex(t =&gt; t.slice(0, 13) === seoulISO(Date.now() - 86400000).slice(0, 13));
-  const yday = yi &gt;= 0 ? yesterdayCompare(c.temperature_2m, h.temperature_2m[yi]) : null;
+  const yday = yi &gt;= 0 &amp;&amp; !stale ? yesterdayCompare(c.temperature_2m, h.temperature_2m[yi]) : null;
   return {
     place: loc.name, place2: loc.hj || &quot;&quot;, source: loc.source,
     temp: c.temperature_2m, feels: c.apparent_temperature, yday,
@@ -550,7 +615,7 @@ function buildModel(raw, offline) {
     popDay: days[0] ? days[0].pop : null,
     hours, days,
     pm10: pmPick(ak &amp;&amp; ak.pm10, aqc.pm10, &quot;pm10&quot;), pm25: pmPick(ak &amp;&amp; ak.pm25, aqc.pm2_5, &quot;pm25&quot;),
-    fetchedAt, offline,
+    fetchedAt, offline, kmaOnly: !!(fc.kma &amp;&amp; fc.kma.only),
   };
 }
 
@@ -1052,7 +1117,8 @@ async function main() {
   try { w = model ? buildWidget(model, FAMILY) : errorWidget(err, FAMILY); }
   catch (e) { console.log(&quot;위젯 그리기 실패: &quot; + e); w = errorWidget(e, FAMILY); }
   w.url = link === CONFIG.appURL ? appLink(null) : link;
-  w.refreshAfterDate = new Date(Date.now() + CONFIG.refreshMinutes * 60 * 1000);
+  w.refreshAfterDate = new Date(Date.now() + (model &amp;&amp; !model.offline ? CONFIG.refreshMinutes : 10) * 60 * 1000);
+  console.log(`[${WIDGET_VERSION}] ${model ? (model.offline ? &quot;오프라인(저장본)&quot; : &quot;새 데이터&quot; + (model.kmaOnly ? &quot;(기상청만)&quot; : &quot;&quot;)) : &quot;오류&quot;}${err ? &quot; · &quot; + (err.message || err) : &quot;&quot;} · 다음 새로 고침 요청 ${seoulISO(w.refreshAfterDate.getTime()).slice(11)}`);
   if (config.runsInWidget) {
     Script.setWidget(w);
   } else if (FAMILY === &quot;small&quot;) {
@@ -1121,7 +1187,7 @@ await a.present();</code></pre>
     <tr><td>PM10</td><td>0–30</td><td>31–80</td><td>81–150</td><td>151+</td></tr>
     <tr><td>PM2.5</td><td>0–15</td><td>16–35</td><td>36–75</td><td>76+</td></tr>
   </table>
-  <p class="sub">단위 ㎍/㎥. 약 30분마다 새로 고쳐요(iOS가 실제 시간을 정합니다). 인터넷이 없으면 마지막 데이터를 「오프라인」으로 표시해요.<br>미세먼지는 가까운 에어코리아 측정소의 실시간 측정값이에요(25km 이내, 3시간 이내 자료). 측정값이 없으면 Open-Meteo 모델 「예측값」으로 표시해요.</p>
+  <p class="sub">단위 ㎍/㎥. 약 20분마다 새로 고침을 요청해요(실제 시간은 iOS가 정해서 더 늦을 수 있어요). Open-Meteo에 연결이 안 되면 기상청 자료만으로 보여 주고, 인터넷이 없으면 마지막 데이터를 「오프라인」과 받은 시각으로 표시해요.<br>미세먼지는 가까운 에어코리아 측정소의 실시간 측정값이에요(25km 이내, 3시간 이내 자료). 측정값이 없으면 Open-Meteo 모델 「예측값」으로 표시해요.</p>
 </section>
 
 <p class="sub" style="text-align:center">데이터: 국내 <a href="https://www.weather.go.kr/">기상청</a> 초단기실황·단기·중기예보 (공공데이터포털) · 해외·어제 기온 비교 <a href="https://open-meteo.com/">Open-Meteo</a> (CC BY 4.0) · 미세먼지: <a href="https://www.airkorea.or.kr/">에어코리아</a> (한국환경공단) 실시간 자료 — 미확정 값으로 실제와 다를 수 있어요 · <a href="../">하늘 날씨 웹앱</a></p>

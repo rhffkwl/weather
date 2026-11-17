@@ -1,6 +1,6 @@
 /* 하늘 날씨 service worker: offline app shell + last API responses */
-const VERSION = 'v17';
-const SHELL = `shell-${VERSION}`, DATA = 'data-v1';
+const VERSION = 'v18';
+const SHELL = `shell-${VERSION}`, DATA = 'data-v2';
 const ASSETS = ['./', 'index.html', 'style.css', 'app.js', 'manifest.json', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png'];
 const API_HOSTS = ['api.open-meteo.com', 'air-quality-api.open-meteo.com', 'geocoding-api.open-meteo.com', 'api.bigdatacloud.net'];
 
@@ -8,19 +8,14 @@ self.addEventListener('install', e => {
   e.waitUntil(caches.open(SHELL).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k.startsWith('shell-') && k !== SHELL).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => (k.startsWith('shell-') && k !== SHELL) || k === 'data-v1').map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', e => {
   const req = e.request; if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  if (API_HOSTS.includes(url.hostname)) {
-    // network first, fall back to last cached response
-    e.respondWith(fetch(req).then(res => {
-      if (res.ok) { const copy = res.clone(); caches.open(DATA).then(c => c.put(req, copy)); }
-      return res;
-    }).catch(() => caches.match(req).then(r => r || Response.error())));
-    return;
-  }
+  // 날씨 API(Open-Meteo 등)는 서비스 워커가 손대지 않음: 예전엔 실패 시 며칠 전 응답을 조용히 돌려줘서
+  // 옛 날씨가 새것처럼 보일 수 있었음. 오프라인 표시는 앱이 저장본의 시각과 함께 직접 함.
+  if (API_HOSTS.includes(url.hostname)) return;
   if (url.origin === self.location.origin && url.pathname.includes('/data/')) {
     // live data (data/airkorea.json): always network first, never serve a stale copy while online
     const key = new Request(url.origin + url.pathname);
